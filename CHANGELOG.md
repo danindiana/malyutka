@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.4 certification tooling update (kernel unchanged)
+
+`src/` is byte-identical to the 0.3.4 release; only `tests/m12-certify.sh` and
+the docs changed.
+- **Coverage vs certification.** The live single tool call, sandboxed shell
+  and SIGKILL paths are gates: if the model never exercises them they are NOT
+  RUN, and the run is incomplete. A multi-call turn or escape attempt the
+  model declines is a GAP: listed in the result, but offline tests are the
+  correctness evidence.
+- **Diagnostics retained** when anything FAILs or is NOT RUN, in
+  `m12-diagnostics-<timestamp>/` (directory 700, files 600):
+  - traces, stderr, build/test logs, journal and sessions;
+  - workspace listed only, not copied;
+  - redacted: API-key env values, bearer tokens, common token prefixes,
+    private-key blocks, ssh public-key bodies.
+- The report records SHA-256 prefixes of `src/` and of the script itself.
+- `M12_SKIP_OFFLINE=1` for quick reruns; it marks those gates NOT RUN, so it
+  cannot certify.
+- ARCHITECTURE: what lock-based liveness does and does not prove.
+
+
 ## 0.3.4 — M1.2 entry
 
 No journal format change: the format is frozen for M1.2.

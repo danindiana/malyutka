@@ -219,6 +219,16 @@ classified as:
 
 Lock files are never deleted (one empty file per run), so absence cannot
 mean "cleanly closed"; garbage collection is deferred.
+**What liveness does and does not prove.** A held lock proves that a Malyutka
+process holding that journal handle is alive. A released lock proves only
+that this process ended. It does not prove that every descendant process
+stopped, or that an action's external effects (a remote job, a pushed
+commit, an email) have ceased or never began. The bwrap PID namespace covers
+sandboxed descendants; nothing local covers external effects. That is why an
+interrupted action is UNKNOWN_OUTCOME and never NOT_EXECUTED, and why
+`--reconcile` records the operator's established outcome rather than
+inferring one.
+
 - "Started, no outcome" is therefore IN_PROGRESS while its run is alive,
   OWNER_STATUS_UNKNOWN when liveness cannot be established, and
   UNKNOWN_OUTCOME only once the run is proven dead.
