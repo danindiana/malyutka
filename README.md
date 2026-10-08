@@ -64,7 +64,7 @@ pending.**
 | Evidence | Status |
 |---|---|
 | Offline suites: 80 unit/invariant/adversarial + 17 CLI integration, as root and unprivileged | pass (Nim 1.6.14) |
-| Native Nim 2.x build and tests | via CI on this repository (see badge) |
+| Native Nim 2.x build and tests | pass on CI (Nim 2.2.x, ubuntu-24.04, unprivileged runner) |
 | Nim 2.2.4 semantic check (`nim check`) | 0 diagnostics in Malyutka sources |
 | Live Ollama / vLLM tool-call round trips on a real host | **pending**: `tests/m12-certify.sh` |
 | bubblewrap under Ubuntu 24.04's real AppArmor configuration | **pending**: `tests/m12-certify.sh` |
@@ -381,7 +381,7 @@ across eight scenarios with known verdicts.
 | Nim | How tested |
 |---|---|
 | 1.6.14 | full build and all suites, locally (root and unprivileged) and in CI |
-| 2.2.x | CI native build and suites; locally a semantic `nim check` with zero diagnostics in Malyutka sources |
+| 2.2.x | CI: native build, sandbox probe, all suites and CLI integration pass; also a semantic `nim check` with zero diagnostics |
 
 Malyutka deliberately avoids `std/random` and `std/oids` in its own code.
 Nim-version notes are in `ARCHITECTURE.md`.

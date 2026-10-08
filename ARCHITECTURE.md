@@ -382,9 +382,10 @@ certifier bugs all fail it.
 |---|---|---|
 | 1.6.14 (native, Ubuntu apt) | full build + all suites, root and unprivileged | 80 unit + 17 integration pass |
 | 2.2.4 (official compiler built to wasm, `@live-codes/nim-wasm` 0.4.0) | `nim check --os:linux --cpu:amd64` on the CLI and all three test files, run offline in bwrap | 0 diagnostics in Malyutka sources |
+| 2.2.x (native, GitHub Actions ubuntu-24.04) | full build, `doctor` sandbox probe, all suites, CLI integration | pass ([run 37721788882](https://github.com/danindiana/malyutka/actions/runs/37721788882)) |
 
-The 2.2.4 check stops at semantic analysis: no 2.x code generation, linking
-or test execution yet. Its only errors come from that wasm build's inability
+The wasm 2.2.4 check stops at semantic analysis; native 2.x code generation,
+linking and test execution are covered by CI. Its only errors come from that wasm build's inability
 to evaluate `random.nim`'s compile-time `sqrt`, which is reached via
 `std/httpclient`. A two-line program importing just `std/httpclient`
 reproduces them exactly.
