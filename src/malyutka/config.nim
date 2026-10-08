@@ -9,15 +9,18 @@ proc parseTheme*(s: string): Theme =
   else: raise newException(ValueError, "unknown theme: " & s)
 
 proc defaultConfig*(): AgentConfig =
-  AgentConfig(maxSteps: 16, cwd: getCurrentDir(), allowShell: false,
-    providerName: getEnv("MALYUTKA_PROVIDER", "mock"),
-    model: getEnv("MALYUTKA_MODEL", "qwen3.5:latest"),
-    baseUrl: getEnv("MALYUTKA_BASE_URL", "http://127.0.0.1:11434"),
-    apiKey: getEnv("MALYUTKA_API_KEY", ""), theme: thWarsaw, jsonEvents: false)
+  result = baseConfig()
+  result.cwd = getCurrentDir()
+  result.theme = thWarsaw
+  result.providerName = getEnv("MALYUTKA_PROVIDER", "mock")
+  result.model = getEnv("MALYUTKA_MODEL", "qwen3.5:latest")
+  result.baseUrl = getEnv("MALYUTKA_BASE_URL", "http://127.0.0.1:11434")
+  result.apiKey = getEnv("MALYUTKA_API_KEY", "")
 
 proc loadConfig*(path: string; base = defaultConfig()): AgentConfig =
   result = base
-  if not fileExists(path): return
+  if not fileExists(path):
+    raise newException(IOError, "config file not found: " & path)
   let j = parseJson(readFile(path))
   if j.hasKey("provider"): result.providerName = j["provider"].getStr
   if j.hasKey("model"): result.model = j["model"].getStr
@@ -26,4 +29,9 @@ proc loadConfig*(path: string; base = defaultConfig()): AgentConfig =
     result.apiKey = getEnv(j["apiKeyEnv"].getStr, result.apiKey)
   if j.hasKey("maxSteps"): result.maxSteps = j["maxSteps"].getInt
   if j.hasKey("allowShell"): result.allowShell = j["allowShell"].getBool
+  if j.hasKey("unconfinedHost"): result.unconfinedHost = j["unconfinedHost"].getBool
+  if j.hasKey("shellTimeoutSec"): result.shellTimeoutSec = j["shellTimeoutSec"].getInt
+  if j.hasKey("maxOutputBytes"): result.maxOutputBytes = j["maxOutputBytes"].getInt
+  if j.hasKey("repeatLimit"): result.repeatLimit = j["repeatLimit"].getInt
+  if j.hasKey("requestTimeoutSec"): result.requestTimeoutSec = j["requestTimeoutSec"].getInt
   if j.hasKey("theme"): result.theme = parseTheme(j["theme"].getStr)

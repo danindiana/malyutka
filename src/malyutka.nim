@@ -1,43 +1,67 @@
 import std/[asyncdispatch, os, parseopt, strutils]
-import malyutka/[types, provider, core, session, events, config]
+import malyutka/[types, provider, core, session, events, config, sandbox]
+
+const Version = "0.3.0"
 
 proc usage() =
-  echo """malyutka // 9M14 - Linux-native Nim agent harness
+  echo """malyutka // 9M14 - Linux-native Nim agent harness (v""" & Version & """)
 
 Usage:
   malyutka run [options] <task>
   malyutka doctor
 
 Options:
-  --provider:mock|openai     Provider adapter (openai is OpenAI-compatible)
+  --provider:mock|openai|ollama|vllm   Provider adapter (all but mock are OpenAI-compatible)
   --model:NAME               Model identifier
   --base-url:URL             e.g. http://127.0.0.1:11434 for Ollama
   --api-key:KEY              API key (prefer MALYUTKA_API_KEY)
-  --allow-shell              Enable shell capability (still policy gated)
-  --max-steps:N              Guidance-loop budget
+  --allow-shell              Enable the shell capability (sandboxed with bubblewrap)
+  --unconfined-host          WAIVER: run the shell on the host, unsandboxed
+  --shell-timeout:SEC        Per-command wall-clock limit (default 30)
+  --max-steps:N              Guidance-loop budget (default 16)
+  --repeat-limit:N           Halt after N identical consecutive calls (default 3, 0=off)
+  --request-timeout:SEC      Provider request timeout (default 300)
   --theme:warsaw|nato|plain  Console theme
-  --json                     Emit canonical JSONL events
+  --json                     Emit canonical JSONL events on stdout
   --config:PATH              JSON config file
 
 Environment:
   MALYUTKA_PROVIDER MALYUTKA_MODEL MALYUTKA_BASE_URL MALYUTKA_API_KEY
+
+Exit codes: 0 answered, 1 failure, 2 usage, 3 confinement unavailable, 4 halted
 """
 
 proc makeProvider(cfg: AgentConfig): Provider =
   case cfg.providerName.toLowerAscii
   of "mock": newMockProvider()
-  of "openai", "ollama", "vllm": newOpenAICompatProvider(cfg.baseUrl, cfg.apiKey, cfg.model)
+  of "openai", "ollama", "vllm":
+    newOpenAICompatProvider(cfg.providerName.toLowerAscii, cfg.baseUrl, cfg.apiKey,
+                            cfg.model, cfg.requestTimeoutSec)
   else: raise newException(ValueError, "unknown provider: " & cfg.providerName)
+
+proc headline(msg: string): string =
+  ## asyncdispatch appends an async traceback to exception messages.
+  let cut = msg.find("\nAsync traceback:")
+  (if cut >= 0: msg[0 ..< cut] else: msg).strip
+
+proc doctor() =
+  echo "malyutka: ", Version
+  echo "designation: 9M14"
+  echo "platform: ", hostOS, "/", hostCPU
+  echo "nim: ", NimVersion
+  echo "cwd: ", getCurrentDir()
+  let (ok, detail) = probeBwrap()
+  echo "sandbox: ", (if ok: "bwrap OK (" & detail & ")" else: "UNAVAILABLE - " & detail)
+  echo "timeout: ", (let t = findExe("timeout"); if t.len > 0: t else: "MISSING")
+  if not ok:
+    echo "note: --allow-shell will refuse to run until the sandbox probe passes."
+    quit(3)
 
 proc main() =
   if paramCount() == 0: usage(); quit(0)
   let cmd = paramStr(1)
-  if cmd == "doctor":
-    echo "malyutka: nominal"
-    echo "designation: 9M14"
-    echo "platform: ", hostOS, "/", hostCPU
-    echo "cwd: ", getCurrentDir()
-    quit(0)
+  if cmd == "doctor": doctor(); quit(0)
+  if cmd in ["-h", "--help", "help"]: usage(); quit(0)
   if cmd != "run": usage(); quit(2)
 
   var cfg = defaultConfig()
@@ -45,44 +69,57 @@ proc main() =
   var configPath = ""
   var p = initOptParser(commandLineParams()[1..^1])
   for kind, key, val in p.getopt():
-    case kind
-    of cmdLongOption:
-      case key
-      of "config": configPath = val
-      else: discard
-    else: discard
-  if configPath.len > 0: cfg = loadConfig(configPath, cfg)
+    if kind == cmdLongOption and key == "config": configPath = val
+  try:
+    if configPath.len > 0: cfg = loadConfig(configPath, cfg)
 
-  p = initOptParser(commandLineParams()[1..^1])
-  for kind, key, val in p.getopt():
-    case kind
-    of cmdLongOption:
-      case key
-      of "provider": cfg.providerName = val
-      of "model": cfg.model = val
-      of "base-url": cfg.baseUrl = val
-      of "api-key": cfg.apiKey = val
-      of "allow-shell": cfg.allowShell = true
-      of "max-steps": cfg.maxSteps = parseInt(val)
-      of "theme": cfg.theme = parseTheme(val)
-      of "json": cfg.jsonEvents = true
-      of "config": discard
-      else: echo "warning: unknown option --", key
-    of cmdArgument: words.add(key)
-    else: discard
-  if words.len == 0: echo "error: task required"; quit(2)
+    p = initOptParser(commandLineParams()[1..^1])
+    for kind, key, val in p.getopt():
+      case kind
+      of cmdLongOption:
+        case key
+        of "provider": cfg.providerName = val
+        of "model": cfg.model = val
+        of "base-url": cfg.baseUrl = val
+        of "api-key": cfg.apiKey = val
+        of "allow-shell": cfg.allowShell = true
+        of "unconfined-host": cfg.unconfinedHost = true
+        of "shell-timeout": cfg.shellTimeoutSec = parseInt(val)
+        of "max-steps": cfg.maxSteps = parseInt(val)
+        of "repeat-limit": cfg.repeatLimit = parseInt(val)
+        of "request-timeout": cfg.requestTimeoutSec = parseInt(val)
+        of "theme": cfg.theme = parseTheme(val)
+        of "json": cfg.jsonEvents = true
+        of "config": discard
+        else: stderr.writeLine("error: unknown option --" & key); quit(2)
+      of cmdShortOption:
+        stderr.writeLine("error: unknown option -" & key); quit(2)
+      of cmdArgument: words.add(key)
+      of cmdEnd: discard
+  except ValueError, IOError:
+    stderr.writeLine("error: " & getCurrentExceptionMsg()); quit(2)
+  if words.len == 0: stderr.writeLine("error: task required"); quit(2)
+  if cfg.unconfinedHost and not cfg.allowShell:
+    stderr.writeLine("warning: --unconfined-host has no effect without --allow-shell")
 
   let task = words.join(" ")
-  if not cfg.jsonEvents: banner(cfg.theme, cfg.providerName, cfg.model)
-  let sink = if cfg.jsonEvents: jsonlSink else: consoleSink(cfg.theme)
+  let shellMode = if not cfg.allowShell: "DISABLED"
+                  elif cfg.unconfinedHost: "HOST (UNCONFINED)"
+                  else: "SANDBOX (bwrap)"
+  if not cfg.jsonEvents: banner(cfg.theme, cfg.providerName, cfg.model, shellMode)
+  let sink: EventSink = if cfg.jsonEvents: jsonlSink else: consoleSink(cfg.theme)
   try:
     let res = waitFor runAgent(makeProvider(cfg), task, cfg, sink = sink)
-    createDir(".malyutka")
-    saveSession(".malyutka/last-session.json", res.messages)
+    saveSession(".malyutka" / "last-session.json", res.runId, res.messages)
     if cfg.jsonEvents: stderr.writeLine("FINAL: " & res.answer)
     else: stderr.writeLine("\n" & res.answer)
+    if res.halt != hrFinal: quit(4)
+  except ConfinementError as e:
+    stderr.writeLine("malyutka: confinement unavailable, refusing to run: " & headline(e.msg))
+    stderr.writeLine("  fix: apt install bubblewrap, check `malyutka doctor`, or pass --unconfined-host")
+    quit(3)
   except CatchableError as e:
-    stderr.writeLine("malyutka: guidance failure: " & e.msg)
+    stderr.writeLine("malyutka: guidance failure: " & headline(e.msg))
     quit(1)
 
 when isMainModule:

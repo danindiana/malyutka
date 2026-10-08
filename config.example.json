@@ -5,5 +5,10 @@
   "apiKeyEnv": "MALYUTKA_API_KEY",
   "maxSteps": 16,
   "allowShell": false,
+  "unconfinedHost": false,
+  "shellTimeoutSec": 30,
+  "maxOutputBytes": 65536,
+  "repeatLimit": 3,
+  "requestTimeoutSec": 300,
   "theme": "warsaw"
 }

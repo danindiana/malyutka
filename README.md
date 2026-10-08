@@ -6,7 +6,7 @@ are simplicity, robustness, low deployment cost, portability, and easy adaptatio
 
 > Small kernel. Replaceable edges. Model proposes; policy disposes.
 
-## M1 — Guidance
+## M1.1 — Guidance, confined
 
 The kernel executes:
 
@@ -19,10 +19,15 @@ Current features:
 - OpenAI-compatible `/v1/chat/completions` provider
 - Ollama and vLLM presets through the same provider
 - structured function/tool-call parsing
-- typed policy gate before tool execution
-- `echo` and opt-in `shell` capabilities
+- capability registry: disabled tools are never advertised to the model
+- policy kernel: monotonic layers (DENY < ASK < ALLOW), effect ceilings,
+  every decision names the responsible policy
+- `echo` and opt-in `shell`; the shell runs under bubblewrap (read-only root,
+  writable workspace, no network, scrubbed env, timeout, output cap) and the
+  run is refused if the sandbox is unavailable
+- repetition halt: identical consecutive tool calls stop the run
 - persistent last-session transcript
-- canonical JSONL event mode for automation/replay
+- canonical JSONL event mode with run-scoped event IDs and `causedBy` links
 - dependency-light retro terminal event view
 - `warsaw`, `nato`, and `plain` themes
 - JSON config + environment overrides
@@ -41,9 +46,18 @@ nimble build
 nimble test
 ```
 
-This generation environment does not contain Nim, so the source has been
-statically inspected but **not claimed to compile yet**. The first action on a
-Nim-equipped Linux host should be `nimble test` followed by compiler cleanup.
+**Compile status:** M1.1 builds warning-free and passes all 23 tests on
+**Nim 1.6.14** (Ubuntu's apt package) with bubblewrap 0.9.0. It has **not yet
+been run on Nim 2.x**. Do not use `apt install nim` on Ubuntu 24.04 (it is
+1.6.14); use choosenim:
+
+```sh
+curl https://nim-lang.org/choosenim/init.sh -sSf | sh
+sudo apt install bubblewrap
+./malyutka doctor        # must report "sandbox: bwrap OK" for --allow-shell
+```
+
+See `ARCHITECTURE.md` for the authority pipeline and invariant status.
 
 ## Ollama
 
@@ -64,8 +78,19 @@ Shell execution is disabled unless explicitly enabled:
   'Use pwd and list the current directory.'
 ```
 
-`--allow-shell` is capability enablement, not blanket trust: policy still
-intercepts the proposed command.
+`--allow-shell` enables a *sandboxed* shell: the current directory is the only
+writable path, there is no network, and the child environment carries no
+credentials. If bubblewrap is missing or unusable, the run is refused (exit 3);
+it never falls back to the host.
+
+Running on the host requires an explicit, logged waiver:
+
+```sh
+./malyutka run --allow-shell --unconfined-host 'task'   # emits confinement.waived
+```
+
+Exit codes: 0 answered, 1 failure, 2 usage, 3 confinement unavailable,
+4 halted (maxSteps or repetition).
 
 ## Generic OpenAI-compatible server
 
@@ -112,8 +137,9 @@ Machine consumers should bypass presentation entirely:
 - `src/malyutka.nim` — CLI
 - `src/malyutka/core.nim` — guidance/agent state machine
 - `src/malyutka/provider.nim` — provider ABI, mock, OpenAI-compatible adapter
-- `src/malyutka/tools.nim` — capability registry
-- `src/malyutka/policy.nim` — authorization gate
+- `src/malyutka/tools.nim` — capability registry (realm, effect ceiling, schema)
+- `src/malyutka/policy.nim` — policy kernel (monotonic layer composition)
+- `src/malyutka/sandbox.nim` — bubblewrap broker, probe, bounded execution
 - `src/malyutka/events.nim` — canonical JSONL + themed console sinks
 - `src/malyutka/session.nim` — transcript persistence
 - `src/malyutka/config.nim` — configuration and themes
@@ -128,21 +154,22 @@ Machine consumers should bypass presentation entirely:
 
 ## Roadmap
 
-### M1.1 — Compile certification + streaming
+### M1.2 — Nim 2.x certification + live providers + streaming
 
-Run against Nim 2.x, resolve compiler/API differences, add SSE incremental token
-streaming while preserving structured tool-call assembly, and integration-test
-against Ollama and vLLM.
+Run `nimble test` on Nim 2.x; integration-test against live Ollama and vLLM
+(the strict fake server in `tests/fake_openai.py` already passes); add SSE
+token streaming with incremental tool-call assembly.
 
 ### M2 — Linux capability layer
 
 Native read/write/patch/find/grep/process tools; bounded output; path scopes;
 capability descriptors; ASK approvals.
 
-### M3 — Isolation
+### M3 — Isolation, deepened
 
-Bubblewrap execution backend, filesystem/network policy, process limits, and a
-clear distinction among capability, authorization, and isolation.
+The bubblewrap backend and capability/authorization/isolation split landed in
+M1.1. M3 adds per-capability filesystem/network scopes, cgroup or rlimit
+process limits, seccomp, an interactive ASK approver, and a credential broker.
 
 ### M4 — Ledger
 
