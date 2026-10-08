@@ -1,4 +1,4 @@
-import std/[asyncdispatch, json, unittest]
+import std/[asyncdispatch, json, random, strutils, unittest]
 import malyutka/[types, provider, core, config, tools, events]
 
 proc cfgWith(allowShell = false): AgentConfig =
@@ -55,3 +55,69 @@ suite "configuration":
     let schemas = wireSchemas(toolsFor(cfgWith(false)))
     for s in schemas: check s["function"]["name"].getStr != "shell"
     check wireSchemas(toolsFor(cfgWith(true))).len == 2
+
+suite "tool protocol completeness":
+  test "repetition halt mid-turn answers every call in the turn":
+    var c = cfgWith(); c.repeatLimit = 2
+    let same = ToolCall(id: "", name: "echo", args: %*{"text": "same"})
+    let p = newScriptedProvider(@[
+      ModelAction(kind: makToolCalls, calls: @[same]),
+      ModelAction(kind: makToolCalls, calls: @[same,
+        ToolCall(id: "", name: "echo", args: %*{"text": "other"}),
+        ToolCall(id: "", name: "nope", args: %*{})])])
+    let r = waitFor runAgent(p, "t", c)
+    check r.halt == hrRepetition
+    check validateTranscript(r.messages) == ""
+    var cancelled = 0
+    for m in r.messages:
+      if m.role == rTool and m.content.startsWith("CANCELLED"): inc cancelled
+    check cancelled == 3
+
+  test "duplicate and missing provider call ids are made unique":
+    let p = newScriptedProvider(@[
+      ModelAction(kind: makToolCalls, calls: @[
+        ToolCall(id: "call_0", name: "echo", args: %*{"text": "a"}),
+        ToolCall(id: "call_0", name: "echo", args: %*{"text": "b"}),
+        ToolCall(id: "", name: "echo", args: nil)]),
+      ModelAction(kind: makFinal, text: "ok")])
+    let r = waitFor runAgent(p, "t", cfgWith())
+    check validateTranscript(r.messages) == ""
+    check r.messages[2].toolCalls[0].id != r.messages[2].toolCalls[1].id
+
+  test "validator rejects the M1 failure shapes":
+    let a = Message(role: rAssistant, toolCalls: @[ToolCall(id: "x", name: "echo")])
+    check validateTranscript(@[a]) != ""                                  # unanswered
+    check validateTranscript(@[Message(role: rTool, toolCallId: "")]) != "" # orphan tool msg
+    check validateTranscript(@[a, Message(role: rTool, toolCallId: "x")]) == ""
+
+  test "protocol fuzz: 2000 random scripts keep the transcript valid":
+    var rng = initRand(0x9_14)
+    let names = ["echo", "echo", "shell", "nope", ""]
+    for trial in 0 ..< 2000:
+      var script: seq[ModelAction]
+      for t in 0 ..< rng.rand(0 .. 7):
+        if rng.rand(1.0) < 0.15:
+          script.add ModelAction(kind: makFinal, text: "f")
+          continue
+        var calls: seq[ToolCall]
+        for k in 0 ..< rng.rand(1 .. 4):
+          let id = case rng.rand(0 .. 3)
+            of 0: ""
+            of 1: "dup"
+            else: "c" & $rng.rand(0 .. 5)
+          let args = case rng.rand(0 .. 3)
+            of 0: nil
+            of 1: %*{"text": "same"}
+            of 2: %*{"command": "true"}
+            else: %*{"text": $rng.rand(0 .. 2)}
+          calls.add ToolCall(id: id, name: rng.sample(names), args: args)
+        script.add ModelAction(kind: makToolCalls, text: "", calls: calls)
+      var c = cfgWith()
+      c.maxSteps = rng.rand(1 .. 6)
+      c.repeatLimit = rng.rand(0 .. 3)
+      let r = waitFor runAgent(newScriptedProvider(script), "t", c)
+      let v = validateTranscript(r.messages)
+      if v != "":
+        checkpoint "trial " & $trial & ": " & v
+        fail()
+        break

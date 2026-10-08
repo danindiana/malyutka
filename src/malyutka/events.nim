@@ -90,6 +90,13 @@ proc consoleSink*(theme: Theme): EventSink =
       tag = "OBS "; detail = payload{"name"}.getStr & "  exit=" & $payload{"exitCode"}.getInt &
         (if payload{"truncated"}.getBool: " TRUNC" else: "") &
         (if payload{"timedOut"}.getBool: " TIMEOUT" else: "")
+    of "journal.unknown_outcome":
+      tag = "WARN"; detail = "UNKNOWN OUTCOME from run " & payload{"run"}.getStr & ": " &
+        payload{"tool"}.getStr & " " & short($payload{"args"}, 60) & "  (malyutka journal)"
+    of "journal.degraded":
+      tag = "WARN"; detail = "outcome not journaled: " & payload{"reason"}.getStr
+    of "tool.cancelled":
+      tag = "CNCL"; detail = payload{"name"}.getStr & "  " & payload{"reason"}.getStr
     of "confinement.failed":
       tag = "FAIL"; detail = payload{"reason"}.getStr
     of "agent.final":

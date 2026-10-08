@@ -3,7 +3,7 @@
 ## sandbox broker decides where. No path executes a call that was not ALLOWed.
 
 import std/[asyncdispatch, json, oids, tables, times]
-import ./[types, provider, tools, policy, events, sandbox]
+import ./[types, provider, tools, policy, events, sandbox, journal]
 
 type
   HaltReason* = enum hrFinal, hrMaxSteps, hrRepetition
@@ -25,6 +25,29 @@ proc msg(role: Role; content: string): Message =
 proc toolMsg(callId, name, content: string): Message =
   Message(role: rTool, content: content, name: name, toolCallId: callId, createdAt: now())
 
+proc validateTranscript*(messages: seq[Message]): string =
+  ## Tool-protocol state machine. Returns "" when valid, else the first
+  ## violation. Rules: every assistant tool call has a non-empty id unique
+  ## within its turn; the calls are answered by exactly one tool message each,
+  ## before any non-tool message; no tool message answers an unknown call.
+  var pending: seq[string]
+  for i, m in messages:
+    case m.role
+    of rAssistant:
+      if pending.len > 0: return "message " & $i & ": unanswered calls " & $pending
+      for c in m.toolCalls:
+        if c.id.len == 0: return "message " & $i & ": tool call without id"
+        if c.id in pending: return "message " & $i & ": duplicate call id " & c.id
+        pending.add c.id
+    of rTool:
+      let k = pending.find(m.toolCallId)
+      if k < 0: return "message " & $i & ": answers unknown call '" & m.toolCallId & "'"
+      pending.delete(k)
+    else:
+      if pending.len > 0: return "message " & $i & ": unanswered calls " & $pending
+  if pending.len > 0: return "end of transcript: unanswered calls " & $pending
+  ""
+
 proc newRunId*(): string = "9M14-" & ($genOid())[^8 .. ^1]
 
 proc defaultProbe(): tuple[ok: bool, detail: string] = probeBwrap()
@@ -32,7 +55,8 @@ proc defaultProbe(): tuple[ok: bool, detail: string] = probeBwrap()
 proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
                registry = toolsFor(cfg); layers = defaultLayers();
                sink: EventSink = nullSink; runId = newRunId();
-               sandboxProbe: SandboxProbe = defaultProbe): Future[RunResult] {.async.} =
+               sandboxProbe: SandboxProbe = defaultProbe;
+               journal: Journal = nil): Future[RunResult] {.async.} =
   let em = newEmitter(runId, sink)
   result.runId = runId
   var names = newJArray()
@@ -44,6 +68,10 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
   # working sandbox aborts the run (invariants 5, 6).
   for n, spec in registry:
     if spec.capability.realm == erSandbox:
+      try: checkWorkspace(cfg.cwd)
+      except ConfinementError as e:
+        discard em.emit("confinement.failed", %*{"tool": n, "reason": e.msg})
+        raise
       let (ok, detail) = sandboxProbe()
       if not ok:
         discard em.emit("confinement.failed", %*{"tool": n, "reason": detail})
@@ -52,10 +80,18 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
     elif spec.capability.realm == erHost:
       discard em.emit("confinement.waived", %*{"tool": n, "ceiling": $spec.capability.maxEffect})
 
+  # Report actions a previous run started but never recorded the outcome of.
+  # They are surfaced, never re-executed.
+  if journal != nil:
+    for a in unknownOutcomes(journal.path):
+      discard em.emit("journal.unknown_outcome", %*{"action": a.action, "run": a.run,
+        "tool": a.tool, "args": a.args, "startedAt": a.startedAt})
+
   let schemas = wireSchemas(registry)
   result.messages = @[msg(rSystem, SystemPrompt), msg(rUser, task)]
   var lastSig = ""
   var repeats = 0
+  var idSeq = 0
 
   for step in 0 ..< cfg.maxSteps:
     discard em.emit("step.start", %*{"step": step})
@@ -67,11 +103,21 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
       result.halt = hrFinal
       return
 
+    # Normalize call ids: unique within the turn, whatever the provider sent.
+    var calls = action.calls
+    var seenIds: seq[string]
+    for c in calls.mitems:
+      if c.id.len == 0 or c.id in seenIds:
+        inc idSeq
+        c.id = runId & "-call-" & $idSeq
+      seenIds.add c.id
+      if c.args.isNil: c.args = newJObject()
+
     var asst = msg(rAssistant, action.text)
-    asst.toolCalls = action.calls
+    asst.toolCalls = calls
     result.messages.add asst
 
-    for call in action.calls:
+    for ci, call in calls:
       let proposedId = em.emit("tool.proposed",
         %*{"callId": call.id, "name": call.name, "args": call.args})
 
@@ -81,6 +127,12 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
       if sig == lastSig: inc repeats else: (lastSig = sig; repeats = 1)
       if cfg.repeatLimit > 0 and repeats >= cfg.repeatLimit:
         let why = "identical call '" & call.name & "' proposed " & $repeats & " times consecutively"
+        # Protocol completeness: every call in this turn, including the one
+        # that tripped the halt, receives exactly one terminal result.
+        for rest in calls[ci .. ^1]:
+          discard em.emit("tool.cancelled", %*{"callId": rest.id, "name": rest.name,
+            "reason": "run halted: repetition"})
+          result.messages.add toolMsg(rest.id, rest.name, "CANCELLED: run halted (" & why & ")")
         discard em.emit("agent.halt", %*{"reason": "repetition", "detail": why, "causedBy": proposedId})
         result.answer = "Halted: " & why
         result.halt = hrRepetition
@@ -89,16 +141,45 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
 
       let decisionId = em.nextId()
       var d: Decision
+      var journaled = false
       if not registry.hasKey(call.name):
         d = Decision(eventId: decisionId, verdict: vDeny, effect: b0ReadOnly,
                      policyId: "registry", reason: "no such capability: " & call.name)
       else:
         let spec = registry[call.name]
-        d = compose(layers, call, spec.capability, spec.effectOf(call.args), cfg, decisionId)
+        let effect = spec.effectOf(call.args)
+        # Write-ahead: a side-effecting action's intent is durable before it
+        # is even authorized; no durable intent, no action.
+        var intentErr = ""
+        if effect > b0ReadOnly:
+          if journal == nil:
+            intentErr = "side-effecting action requires a durable journal; none attached"
+          else:
+            try:
+              journal.append(%*{"rec": "intent", "action": decisionId, "run": runId,
+                "callId": call.id, "tool": call.name, "args": call.args, "effect": $effect})
+              journaled = true
+            except JournalError as e:
+              intentErr = "intent not durable: " & e.msg
+        if intentErr.len > 0:
+          d = Decision(eventId: decisionId, verdict: vDeny, effect: effect,
+                       policyId: "journal", reason: intentErr)
+        else:
+          d = compose(layers, call, spec.capability, effect, cfg, decisionId)
       if d.verdict == vAsk:
         # No approver is attached in M1.x: an unanswered ASK fails closed.
         d.verdict = vDeny
         d.reason = "ASK unanswered (no approver attached): " & d.reason
+      if journaled:
+        try:
+          journal.append(%*{"rec": "decision", "action": decisionId,
+            "verdict": $d.verdict, "policy": d.policyId, "reason": d.reason})
+          if d.verdict == vAllow:
+            journal.append(%*{"rec": "started", "action": decisionId})
+        except JournalError as e:
+          if d.verdict == vAllow:
+            d = Decision(eventId: decisionId, verdict: vDeny, effect: d.effect,
+                         policyId: "journal", reason: "decision not durable: " & e.msg)
       discard em.emit("policy.decision", %*{"verdict": $d.verdict, "effect": $d.effect,
         "policy": d.policyId, "reason": d.reason, "causedBy": proposedId}, id = d.eventId)
 
@@ -108,9 +189,11 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
         continue
 
       var r: ToolResult
+      var executed = true
       try:
         r = registry[call.name].run(call.args, cfg)
       except ConfinementError as e:
+        executed = false
         # Never retried on the host (invariant 6).
         discard em.emit("confinement.failed", %*{"tool": call.name, "reason": e.msg, "causedBy": d.eventId})
         r = ToolResult(ok: false, output: "NOT EXECUTED: confinement unavailable: " & e.msg, exitCode: -1)
@@ -119,6 +202,16 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
       discard em.emit("tool.result", %*{"name": call.name, "ok": r.ok, "exitCode": r.exitCode,
         "truncated": r.truncated, "timedOut": r.timedOut, "bytes": r.output.len,
         "causedBy": d.eventId})
+      if journaled:
+        try:
+          journal.append(%*{"rec": "outcome", "action": decisionId,
+            "state": (if executed: "COMPLETED" else: "NOT_EXECUTED"),
+            "ok": r.ok, "exitCode": r.exitCode, "truncated": r.truncated, "timedOut": r.timedOut})
+        except JournalError as e:
+          # The action ran but its outcome is not durable: the journal will
+          # (correctly) report UNKNOWN_OUTCOME. Make the degradation visible.
+          discard em.emit("journal.degraded", %*{"action": decisionId, "reason": e.msg})
+          r.output.add "\n[malyutka: outcome not journaled: " & e.msg & "]"
       result.messages.add toolMsg(call.id, call.name, r.output)
 
   result.answer = "Stopped: maxSteps reached"

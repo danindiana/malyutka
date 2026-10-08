@@ -95,13 +95,15 @@ proc parseResponse*(p: OpenAICompatProvider; payload: JsonNode): ModelAction =
   let text = if m{"content"}.isNil or m["content"].kind != JString: "" else: m["content"].getStr
   if m.hasKey("tool_calls") and m["tool_calls"].kind == JArray and m["tool_calls"].len > 0:
     var calls: seq[ToolCall]
+    var seen: seq[string]
     for tc in m["tool_calls"]:
       let fn = tc{"function"}
       if fn.isNil: continue
       var id = tc{"id"}.getStr("")
-      if id.len == 0:             # some local servers omit ids; ours must be unique
+      if id.len == 0 or id in seen:  # missing or reused ids: ours must be unique per turn
         inc p.callSeq
         id = "mk_" & $p.callSeq
+      seen.add id
       calls.add ToolCall(id: id, name: fn{"name"}.getStr(""),
                          args: parseToolArgs(fn{"arguments"}))
     if calls.len > 0:

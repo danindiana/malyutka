@@ -22,9 +22,13 @@ Current features:
 - capability registry: disabled tools are never advertised to the model
 - policy kernel: monotonic layers (DENY < ASK < ALLOW), effect ceilings,
   every decision names the responsible policy
-- `echo` and opt-in `shell`; the shell runs under bubblewrap (read-only root,
-  writable workspace, no network, scrubbed env, timeout, output cap) and the
-  run is refused if the sandbox is unavailable
+- `echo` and opt-in `shell`; the shell runs under bubblewrap: allowlisted
+  read-only system dirs, writable workspace, no `/home` `/run` `/var`, no
+  network or host sockets, no inherited fds, scrubbed env, timeout, output
+  cap, and it dies with the harness. The run is refused if the sandbox is
+  unavailable
+- write-ahead journal: side-effecting actions are durably recorded before
+  they run; interrupted ones are reported as UNKNOWN_OUTCOME, never re-run
 - repetition halt: identical consecutive tool calls stop the run
 - persistent last-session transcript
 - canonical JSONL event mode with run-scoped event IDs and `causedBy` links
@@ -46,15 +50,18 @@ nimble build
 nimble test
 ```
 
-**Compile status:** M1.1 builds warning-free and passes all 23 tests on
-**Nim 1.6.14** (Ubuntu's apt package) with bubblewrap 0.9.0. It has **not yet
-been run on Nim 2.x**. Do not use `apt install nim` on Ubuntu 24.04 (it is
+**Compile status:** 0.3.1 builds warning-free on **Nim 1.6.14** with
+bubblewrap 0.9.0 and passes 59 tests (48 unit/adversarial + 11 CLI
+integration) both as root and as an **unprivileged user**. It has **not yet
+been run on Nim 2.x**, nor on a host with Ubuntu 24.04's AppArmor
+user-namespace restriction (the test VM lacks it). Do not use `apt install nim` on Ubuntu 24.04 (it is
 1.6.14); use choosenim:
 
 ```sh
 curl https://nim-lang.org/choosenim/init.sh -sSf | sh
 sudo apt install bubblewrap
 ./malyutka doctor        # must report "sandbox: bwrap OK" for --allow-shell
+nimble test && tests/integration.sh ./malyutka
 ```
 
 See `ARCHITECTURE.md` for the authority pipeline and invariant status.
@@ -90,7 +97,22 @@ Running on the host requires an explicit, logged waiver:
 ```
 
 Exit codes: 0 answered, 1 failure, 2 usage, 3 confinement unavailable,
-4 halted (maxSteps or repetition).
+4 halted (maxSteps or repetition), 5 journal unavailable / unknown outcomes
+pending.
+
+## Journal
+
+Every side-effecting action is journaled (fdatasync'd) as intent → decision →
+started → outcome in `~/.local/state/malyutka/journal.jsonl`, outside any
+workspace and invisible to the sandbox. If Malyutka dies mid-action:
+
+```sh
+./malyutka journal                 # lists UNKNOWN_OUTCOME actions (exit 5)
+./malyutka journal --ack:9M14-…    # after inspecting the workspace
+```
+
+Interrupted actions are surfaced on every run until acknowledged. They are
+never re-executed.
 
 ## Generic OpenAI-compatible server
 
@@ -139,7 +161,8 @@ Machine consumers should bypass presentation entirely:
 - `src/malyutka/provider.nim` — provider ABI, mock, OpenAI-compatible adapter
 - `src/malyutka/tools.nim` — capability registry (realm, effect ceiling, schema)
 - `src/malyutka/policy.nim` — policy kernel (monotonic layer composition)
-- `src/malyutka/sandbox.nim` — bubblewrap broker, probe, bounded execution
+- `src/malyutka/sandbox.nim` — bubblewrap broker, probe, fd-clean bounded execution
+- `src/malyutka/journal.nim` — write-ahead action journal
 - `src/malyutka/events.nim` — canonical JSONL + themed console sinks
 - `src/malyutka/session.nim` — transcript persistence
 - `src/malyutka/config.nim` — configuration and themes
@@ -154,11 +177,19 @@ Machine consumers should bypass presentation entirely:
 
 ## Roadmap
 
-### M1.2 — Nim 2.x certification + live providers + streaming
+### M1.2 — Adversarial certification
 
-Run `nimble test` on Nim 2.x; integration-test against live Ollama and vLLM
-(the strict fake server in `tests/fake_openai.py` already passes); add SSE
-token streaming with incremental tool-call assembly.
+Acceptance: every suite passes, with no unexpected host writes, no
+credential exposure, and no silently unconfined execution.
+
+- Nim 2.x compile + full suite.
+- Live Ollama and vLLM round trips.
+- Non-root on stock Ubuntu 24.04 with the AppArmor userns restriction.
+- Already done in 0.3.1: protocol fuzzing, containment and escape
+  regression tests, forced termination during tool execution, journal crash
+  consistency.
+- Remaining: an interactive ASK approver with approval crash consistency,
+  and SSE streaming.
 
 ### M2 — Linux capability layer
 

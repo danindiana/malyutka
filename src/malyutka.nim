@@ -1,7 +1,7 @@
-import std/[asyncdispatch, os, parseopt, strutils]
-import malyutka/[types, provider, core, session, events, config, sandbox]
+import std/[asyncdispatch, json, os, parseopt, strutils]
+import malyutka/[types, provider, core, session, events, config, sandbox, journal]
 
-const Version = "0.3.0"
+const Version = "0.3.1"
 
 proc usage() =
   echo """malyutka // 9M14 - Linux-native Nim agent harness (v""" & Version & """)
@@ -9,6 +9,7 @@ proc usage() =
 Usage:
   malyutka run [options] <task>
   malyutka doctor
+  malyutka journal [--ack:ACTION_ID]   List (or acknowledge) actions with unknown outcome
 
 Options:
   --provider:mock|openai|ollama|vllm   Provider adapter (all but mock are OpenAI-compatible)
@@ -27,8 +28,10 @@ Options:
 
 Environment:
   MALYUTKA_PROVIDER MALYUTKA_MODEL MALYUTKA_BASE_URL MALYUTKA_API_KEY
+  MALYUTKA_STATE_DIR   journal + sessions (default ~/.local/state/malyutka)
 
-Exit codes: 0 answered, 1 failure, 2 usage, 3 confinement unavailable, 4 halted
+Exit codes: 0 answered, 1 failure, 2 usage, 3 confinement unavailable, 4 halted,
+            5 journal unavailable / unknown outcomes pending (journal command)
 """
 
 proc makeProvider(cfg: AgentConfig): Provider =
@@ -44,6 +47,40 @@ proc headline(msg: string): string =
   let cut = msg.find("\nAsync traceback:")
   (if cut >= 0: msg[0 ..< cut] else: msg).strip
 
+proc stateDir(): string =
+  getEnv("MALYUTKA_STATE_DIR", parentDir(defaultJournalPath()))
+
+proc journalPath(): string = stateDir() / "journal.jsonl"
+
+proc journalCmd() =
+  var ack = ""
+  for kind, key, val in getopt(commandLineParams()[1 .. ^1]):
+    if kind == cmdLongOption and key == "ack": ack = val
+  let path = journalPath()
+  if ack.len > 0:
+    let pending = unknownOutcomes(path)
+    var found = false
+    for a in pending:
+      if a.action == ack: found = true
+    if not found:
+      stderr.writeLine("error: no UNKNOWN_OUTCOME action " & ack); quit(2)
+    let j = openJournal(path)
+    j.append(%*{"rec": "ack", "action": ack, "by": getEnv("USER", "operator")})
+    j.close()
+    echo "acknowledged ", ack
+    quit(0)
+  let pending = unknownOutcomes(path)
+  if pending.len == 0:
+    echo "journal: ", path, " - no actions with unknown outcome"
+    quit(0)
+  echo "journal: ", path
+  echo pending.len, " action(s) started but never recorded an outcome."
+  echo "They may or may not have taken effect. Malyutka will not re-run them."
+  for a in pending:
+    echo "  ", a.action, "  ", a.startedAt, "  ", a.tool, " ", $a.args
+  echo "Inspect the workspace, then: malyutka journal --ack:<ACTION_ID>"
+  quit(5)
+
 proc doctor() =
   echo "malyutka: ", Version
   echo "designation: 9M14"
@@ -52,7 +89,7 @@ proc doctor() =
   echo "cwd: ", getCurrentDir()
   let (ok, detail) = probeBwrap()
   echo "sandbox: ", (if ok: "bwrap OK (" & detail & ")" else: "UNAVAILABLE - " & detail)
-  echo "timeout: ", (let t = findExe("timeout"); if t.len > 0: t else: "MISSING")
+  echo "journal: ", journalPath()
   if not ok:
     echo "note: --allow-shell will refuse to run until the sandbox probe passes."
     quit(3)
@@ -61,6 +98,7 @@ proc main() =
   if paramCount() == 0: usage(); quit(0)
   let cmd = paramStr(1)
   if cmd == "doctor": doctor(); quit(0)
+  if cmd == "journal": journalCmd()
   if cmd in ["-h", "--help", "help"]: usage(); quit(0)
   if cmd != "run": usage(); quit(2)
 
@@ -109,8 +147,14 @@ proc main() =
   if not cfg.jsonEvents: banner(cfg.theme, cfg.providerName, cfg.model, shellMode)
   let sink: EventSink = if cfg.jsonEvents: jsonlSink else: consoleSink(cfg.theme)
   try:
-    let res = waitFor runAgent(makeProvider(cfg), task, cfg, sink = sink)
-    saveSession(".malyutka" / "last-session.json", res.runId, res.messages)
+    var j: Journal
+    try: j = openJournal(journalPath())
+    except JournalError as e:
+      stderr.writeLine("malyutka: journal unavailable, refusing to run: " & e.msg); quit(5)
+    defer: j.close()
+    let res = waitFor runAgent(makeProvider(cfg), task, cfg, sink = sink, journal = j)
+    # Outside the workspace, like the journal: the sandboxed agent cannot edit it.
+    saveSession(stateDir() / "sessions" / (res.runId & ".json"), res.runId, res.messages)
     if cfg.jsonEvents: stderr.writeLine("FINAL: " & res.answer)
     else: stderr.writeLine("\n" & res.answer)
     if res.halt != hrFinal: quit(4)

@@ -54,6 +54,7 @@ proc shellSpec(cfg: AgentConfig): ToolSpec =
         let exe = bwrapPath()
         if exe.len == 0:
           raise newException(ConfinementError, "sandbox requested but bwrap unavailable")
+        checkWorkspace(cfg.cwd)
         argv = @[exe] & bwrapArgv(cfg.cwd, cmd)
       of erHost:
         argv = @["/bin/sh", "-c", cmd]
