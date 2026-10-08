@@ -10,7 +10,7 @@ let testTmp = getTempDir() / ("malyutka-t-" & $getCurrentProcessId())
 createDir(testTmp)
 
 let (bwOk, bwDetail) = probeBwrap()
-let baitDir = getHomeDir() / ".malyutka-bait"
+let baitDir = getHomeDir() / (".malyutka-bait-" & $getCurrentProcessId())   # per process: concurrent runs must not share bait
 let ws = testTmp / "malyutka-adv-ws"
 
 proc cfgFor(dir: string): AgentConfig =

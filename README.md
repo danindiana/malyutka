@@ -200,7 +200,10 @@ M12_VLLM_URL=http://127.0.0.1:8000 M12_VLLM_MODEL=… tests/m12-certify.sh
 ```
 
 Exit 0 = certified on that host, 1 = failures, 3 = gates not run. The report
-`m12-report-<timestamp>.txt` is the evidence.
+`m12-report-<timestamp>.txt` is the evidence. vLLM is optional
+(`M12_REQUIRE_VLLM=1` makes it a gate). Run one certification at a time.
+`tests/m12-selftest.sh` tests the certifier itself against a stand-in model
+(about 4 minutes).
 
 ### M1.2 — scope
 

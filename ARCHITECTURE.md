@@ -358,6 +358,17 @@ Here it was exercised only against a stand-in "cooperative model" server, as
 a test of the script itself; its escape gate was mutation-checked. Real
 models are worlock's job.
 
+**Testing the certifier.** `tests/m12-selftest.sh` runs `m12-certify.sh`
+through eight scenarios with known verdicts against `tests/fake_model.py`:
+cooperative, refusing, escape-mutant, non-starting kill, skip-offline, vLLM
+required, vLLM unreachable and vLLM reachable. Mutants of the four reviewed
+certifier bugs all fail it.
+- The first version of the non-starting-kill scenario did *not* catch its
+  mutant: the run ended before any kill was possible. The stand-in now
+  stalls after the proposal, so the harness stays alive and a premature kill
+  is visible.
+- Certifier runs must not overlap for the same user.
+
 **Suites.**
 - `tests/test_core.nim`
 - `tests/test_invariants.nim`

@@ -6,6 +6,9 @@
 #   M12_MODEL=qwen3.5:27b tests/m12-certify.sh
 #   M12_VLLM_URL=http://127.0.0.1:8000 M12_VLLM_MODEL=... tests/m12-certify.sh
 #
+# vLLM is OPTIONAL: unconfigured, it is reported as INFO and does not block
+# certification. M12_REQUIRE_VLLM=1 makes it a gate.
+#
 # Writes m12-report-<timestamp>.txt. Every check is one of:
 #   PASS / FAIL       harness behaviour on this host
 #   NOT RUN           a certification gate that could not be exercised (e.g.
@@ -16,13 +19,17 @@
 #   INFO              context only
 # Exit: 0 all gates passed (GAPs listed), 1 any FAIL, 3 no FAIL but some gate
 # NOT RUN. If anything FAILs or is NOT RUN, redacted traces/stderr/build logs
-# are kept in m12-diagnostics-<timestamp>/ (mode 700).
+# are kept in m12-diagnostics-<timestamp>/ (mode 700). Redaction is
+# BEST-EFFORT (known key/token formats and the API-key env value); review the
+# directory before sharing it.
+# Run ONE certification at a time per user: the offline suites' process
+# checks (pgrep) cannot tell concurrent runs apart.
 # M12_SKIP_OFFLINE=1 skips build/suites for quick reruns; those gates are then
 # NOT RUN, so such a run can never certify.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 ROOT=$PWD
-STAMP=$(date +%Y%m%d-%H%M%S)
+STAMP=$(date +%Y%m%d-%H%M%S)-$$   # pid: unique even for runs started in the same second
 REPORT="$ROOT/m12-report-$STAMP.txt"
 OLLAMA=${M12_OLLAMA_URL:-http://127.0.0.1:11434}
 MODEL=${M12_MODEL:-qwen3.5:latest}
@@ -67,7 +74,7 @@ PY
   find "$WORK/ws" -maxdepth 2 2>/dev/null | sed "s|$WORK/||" > "$dest/workspace-listing.txt"
   chmod 600 "$dest/workspace-listing.txt"
   cp "$REPORT" "$dest/" && chmod 600 "$dest/$(basename "$REPORT")"
-  echo "diagnostics kept (redacted, mode 700): $dest" | tee -a "$REPORT"
+  echo "diagnostics kept (mode 700; redaction is best-effort, review before sharing): $dest" | tee -a "$REPORT"
 }
 # shellcheck disable=SC2046
 cleanup() {
@@ -128,8 +135,8 @@ log "  bwrap     $(bwrap --version 2>/dev/null || echo missing)"
 log "  userns    unprivileged_userns_clone=$(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo n/a)" \
     " apparmor_restrict_unprivileged_userns=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo n/a)"
 log "  malyutka  $(sed -n 's/^version *= *"\(.*\)"/\1/p' malyutka.nimble) $(git describe --always --dirty 2>/dev/null)"
-log "  kernel    $(cat src/malyutka.nim src/malyutka/*.nim | sha256sum | cut -c1-16) (sha256 of src/, first 16)"
-log "  script    $(sha256sum "$0" | cut -c1-16) (sha256 of this script, first 16)"
+log "  kernel    sha256(src/malyutka.nim src/malyutka/*.nim) $(cat src/malyutka.nim src/malyutka/*.nim | sha256sum | cut -d" " -f1)"
+log "  script    sha256($0) $(sha256sum "$0" | cut -d" " -f1)"
 log "  ollama    $OLLAMA  model=$MODEL"
 log ""
 
@@ -137,16 +144,25 @@ log "[1] native build and offline suites"
 if [ "$(id -u)" -eq 0 ]; then
   fail "running as root: certification requires an ordinary user"
 fi
+# >>> offline
 if [ -n "${M12_SKIP_OFFLINE:-}" ]; then
-  [ -x "$BIN" ] || { nimble build -y >"$WORK/build.log" 2>&1 || true; }
-  notrun "native build + offline suites (M12_SKIP_OFFLINE set)"
-elif nimble build -y >"$WORK/build.log" 2>&1; then pass "nimble build ($(nim -v | head -1 | awk '{print $4}'))"
-else fail "nimble build: $(tail -3 "$WORK/build.log" | tr '\n' ' ')"; fi
-if nimble test >"$WORK/test.log" 2>&1 && ! grep -q '\[FAILED\]' "$WORK/test.log"; then
-  pass "nimble test: $(grep -c '\[OK\]' "$WORK/test.log") passed"
-else fail "nimble test: $(grep -c '\[FAILED\]' "$WORK/test.log") failed (see $WORK/test.log)"; fi
-if tests/integration.sh "$BIN" >"$WORK/int.log" 2>&1; then pass "integration: $(tail -1 "$WORK/int.log")"
-else fail "integration: $(tail -1 "$WORK/int.log")"; fi
+  [ -x "$BIN" ] || nimble build -y >"$WORK/build.log" 2>&1 || true
+  notrun "native build + offline suites (M12_SKIP_OFFLINE set: not executed)"
+else
+  if nimble build -y >"$WORK/build.log" 2>&1; then pass "nimble build ($(nim -v | head -1 | awk '{print $4}'))"
+  else fail "nimble build: $(tail -3 "$WORK/build.log" | tr '\n' ' ')"; fi
+  if nimble test >"$WORK/test.log" 2>&1 && ! grep -q '\[FAILED\]' "$WORK/test.log"; then
+    pass "nimble test: $(grep -c '\[OK\]' "$WORK/test.log") passed"
+  else
+    # Name the failure even when no unittest case reported [FAILED] (e.g. a
+    # crash or compile error): one intermittent failure of exactly that shape
+    # was seen once during self-testing and could not be reproduced.
+    fail "nimble test: $(grep -c '\[FAILED\]' "$WORK/test.log") case(s) failed; first error: $({ grep -m1 -E '\[FAILED\]|\.nim\([0-9]+, ?[0-9]+\).*Error:|Unhandled exception|Exception message|SIG[A-Z]+' "$WORK/test.log" || tail -1 "$WORK/test.log"; } | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-200)"
+  fi
+  if tests/integration.sh "$BIN" >"$WORK/int.log" 2>&1; then pass "integration: $(tail -1 "$WORK/int.log")"
+  else fail "integration: $(tail -1 "$WORK/int.log")"; fi
+fi
+# <<< offline
 
 log "[2] sandbox on this host"
 if "$BIN" doctor >"$WORK/doctor.log" 2>&1; then pass "doctor: $(grep sandbox "$WORK/doctor.log")"
@@ -157,6 +173,9 @@ mkdir -p "$WORK/ws"
 live_suite() {   # live_suite LABEL URL MODEL PROVIDER
   local L=$1 URL=$2 M=$3 P=$4
   log "[$L] live round trips ($P, $M)"
+  # Each provider suite gets its own journal, so no check can be satisfied by
+  # an earlier suite's leftovers.
+  export MALYUTKA_STATE_DIR="$WORK/state-$L"
 
   run_live "$L-plain" "$URL" "$M" "$P" "" "Reply with exactly one word: READY"
   if [ $RC -eq 0 ] && [ "$(count agent.final)" -ge 1 ] && protocol_clean; then pass "plain answer"
@@ -203,34 +222,54 @@ print(max(c.values()) if c else 0)" "$TRACE")
   elif [ "$(count tool.result)" -ge 1 ]; then pass "model-issued escape attempt contained (no host write, no ~/.ssh)"
   else gap "escape attempt not issued by the model; containment evidence: offline adversarial suite"; fi
 
-  # SIGKILL during a real model-driven tool call, then restart.
+  # SIGKILL during a real model-driven tool call, then restart. The kill is
+  # sent only after (a) this run's action has a DURABLE `started` journal
+  # record and (b) the sandboxed command is observably running. A proposal
+  # alone is not execution: killing earlier would test the wrong thing.
   : > "$WORK/kill.jsonl"
   (cd "$WORK/ws" && exec "$BIN" run --provider:"$P" --model:"$M" --base-url:"$URL" --allow-shell \
-     --shell-timeout:120 --json "Use the shell tool to run exactly: sleep 60; touch m12-late" \
+     --shell-timeout:120 --json "Use the shell tool to run exactly: sleep 60; touch m12-late-$STAMP" \
      >"$WORK/kill.jsonl" 2>/dev/null) &
-  local pid=$! waited=0
-  while [ $waited -lt 300 ] && ! grep -q '"kind":"tool.proposed".*"shell"' "$WORK/kill.jsonl"; do
-    sleep 1; waited=$((waited+1))
+  local pid=$! waited=0 rid="" started=0 running=0
+  # Sandbox processes are matched by a unique token in bwrap's / sh's argv
+  # (never by the token alone: the harness's own argv contains the task text).
+  sandboxed() { pgrep -f "^[^ ]*bwrap .*m12-late-$STAMP" >/dev/null ||
+                pgrep -f "^/bin/sh -c sleep 60; touch m12-late-$STAMP" >/dev/null; }
+  while [ $waited -lt 300 ]; do
     kill -0 $pid 2>/dev/null || break
+    [ -z "$rid" ] && rid=$(grep -m1 -oE '"run":"9M14-[0-9a-f]+"' "$WORK/kill.jsonl" | cut -d'"' -f4)
+    if [ -n "$rid" ] && grep -qE "\"rec\":\"started\".*\"w\":\"$rid\." "$MALYUTKA_STATE_DIR/journal.jsonl" 2>/dev/null; then
+      started=1
+      if sandboxed; then running=1; break; fi
+    fi
+    sleep 0.5; waited=$((waited+1))
   done
-  if grep -q '"kind":"tool.proposed".*"shell"' "$WORK/kill.jsonl"; then
-    sleep 2; kill -9 $pid 2>/dev/null; wait $pid 2>/dev/null; sleep 1
-    if pgrep -x -f 'sleep 60' >/dev/null; then fail "sandbox survived SIGKILL of a live run"
+  if [ $started -eq 1 ] && [ $running -eq 1 ]; then
+    pass "kill precondition: durable 'started' recorded and sandboxed command running"
+    sleep 1; kill -9 $pid 2>/dev/null; wait $pid 2>/dev/null; sleep 1
+    if sandboxed; then fail "sandbox survived SIGKILL of a live run"
     else pass "sandbox died with the SIGKILLed live run"; fi
     jout=$("$BIN" journal 2>&1); jrc=$?
-    if [ $jrc -eq 5 ] && grep -q "UNKNOWN_OUTCOME" <<<"$jout"; then pass "journal: interrupted live action is UNKNOWN_OUTCOME"
-    else fail "journal after live SIGKILL (exit $jrc)"; fi
+    local aid
+    aid=$(grep ' UNKNOWN_OUTCOME ' <<<"$jout" | grep -oE "$rid-[0-9]{4}" | head -1)
+    if [ $jrc -eq 5 ] && [ -n "$aid" ]; then pass "journal: this run's interrupted action $aid is UNKNOWN_OUTCOME"
+    else fail "journal after live SIGKILL (exit $jrc): interrupted action of $rid not UNKNOWN_OUTCOME"; fi
     run_live "$L-restart" "$URL" "$M" "$P" "" "Reply with exactly one word: RESUMED"
-    if [ $RC -eq 0 ] && [ "$(count journal.unknown_outcome)" -ge 1 ]; then pass "restart surfaces the unknown outcome and completes"
-    else fail "restart after SIGKILL (exit $RC)"; fi
-    sleep 1; [ ! -e "$WORK/ws/m12-late" ] && pass "interrupted command never completed" \
+    if [ $RC -eq 0 ] && grep -q "\"kind\":\"journal.unknown_outcome\".*\"$aid\"" "$TRACE"; then
+      pass "restart surfaces $aid and completes"
+    else fail "restart after SIGKILL (exit $RC) did not surface $aid"; fi
+    sleep 1; [ ! -e "$WORK/ws/m12-late-$STAMP" ] && pass "interrupted command never completed" \
       || fail "interrupted command completed after SIGKILL"
-    id=$(grep ' UNKNOWN_OUTCOME ' <<<"$jout" | grep -oE '9M14-[0-9a-f]+-[0-9]{4}' | head -1)
-    [ -n "$id" ] && "$BIN" journal --reconcile:"$id" --as:not-executed >/dev/null 2>&1
+    # No automatic reconciliation: the outcome is genuinely unknown.
+    if "$BIN" journal 2>&1 | grep ' UNKNOWN_OUTCOME ' | grep -q "$aid"; then
+      pass "$aid left UNKNOWN_OUTCOME (not reconciled, not re-executed)"
+    else fail "$aid no longer UNKNOWN_OUTCOME after restart"; fi
   else
     kill -9 $pid 2>/dev/null; wait $pid 2>/dev/null
-    info "model did not issue the shell call within 300s; SIGKILL-under-live-run not exercised"
-    notrun "live SIGKILL/restart"
+    if [ $started -eq 1 ]; then why="'started' recorded but the sandboxed command was never observed running"
+    elif grep -q '"kind":"tool.proposed"' "$WORK/kill.jsonl"; then why="a tool call was proposed but never reached a durable 'started'"
+    else why="the model never issued the shell call"; fi
+    notrun "live SIGKILL/restart: $why (within 150s)"
   fi
 }
 
@@ -245,9 +284,15 @@ else
 fi
 
 if [ -n "${M12_VLLM_URL:-}" ]; then
-  live_suite 4 "$M12_VLLM_URL" "${M12_VLLM_MODEL:?set M12_VLLM_MODEL}" vllm
+  if curl -sf -m 5 "$M12_VLLM_URL/v1/models" >/dev/null; then
+    live_suite 4 "$M12_VLLM_URL" "${M12_VLLM_MODEL:?set M12_VLLM_MODEL}" vllm
+  else
+    notrun "vLLM live suite: configured but no server at $M12_VLLM_URL"
+  fi
+elif [ -n "${M12_REQUIRE_VLLM:-}" ]; then
+  notrun "vLLM live suite: required (M12_REQUIRE_VLLM) but M12_VLLM_URL/M12_VLLM_MODEL not set"
 else
-  notrun "vLLM live suite: set M12_VLLM_URL and M12_VLLM_MODEL"
+  info "vLLM live suite: optional, not configured (M12_VLLM_URL + M12_VLLM_MODEL; M12_REQUIRE_VLLM=1 makes it a gate)"
 fi
 
 log ""

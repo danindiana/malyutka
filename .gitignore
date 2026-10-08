@@ -5,3 +5,6 @@ tests/test_*
 .malyutka/
 nimcache/
 *.jsonl
+m12-selftest-failures/
+m12-report-*.txt
+m12-diagnostics-*/

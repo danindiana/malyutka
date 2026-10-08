@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.3.4 certification tooling, revision 2 (kernel unchanged)
+
+Response to the review of the first certification tooling revision. Each fix
+is tested by `tests/m12-selftest.sh` against `tests/fake_model.py`. Every
+original bug, reintroduced as a mutant, fails the self-test.
+
+| Finding | Was | Now | Mutant |
+|---|---|---|---|
+| vLLM accidentally mandatory | an unconfigured vLLM gave NOT RUN, so an Ollama-only run could never certify (my own stand-in runs showed it; I misread it as correct) | optional (INFO) unless `M12_REQUIRE_VLLM=1`; configured but unreachable → NOT RUN | caught (A) |
+| SIGKILL keyed on `tool.proposed` | could kill before execution began | kill only after this run's durable `started` record **and** an observed sandboxed process (matched by a unique token in bwrap/sh argv, not the harness's own argv) | caught (D) |
+| Automatic reconcile as not-executed | contradicted the uncertainty model | no reconciliation; verifies the action is still UNKNOWN_OUTCOME after restart | caught (A) |
+| `M12_SKIP_OFFLINE` still ran the suites | only the build was skipped | one conditional for build + suites | caught (E) |
+| Truncated hashes | 16 hex chars | full SHA-256 of `src/` and of the script | — |
+| Redaction overstated | "redacted" | documented as best-effort in the header and the report | — |
+
+### Also
+
+- **Isolated kill-gate journal.** Each provider suite has its own journal;
+  the restart check matches the specific interrupted action, never a
+  leftover.
+- **Concurrency.** Certification runs must not overlap for one user:
+  parallel self-tests interfered via a per-user bait directory, `pgrep`
+  checks and a second-resolution token. STAMP and the adversarial bait
+  directory are now per-process; overlap is documented as unsupported.
+- **Unexplained failure, recorded.** One `nimble test` failure was seen once
+  during self-testing (no `[FAILED]` case, log not retained) and did not
+  recur in 9 later runs. The self-test now keeps evidence of any unexpected
+  verdict, and the certifier reports the first specific error line.
+
+
 ## 0.3.4 certification tooling update (kernel unchanged)
 
 `src/` is byte-identical to the 0.3.4 release; only `tests/m12-certify.sh` and
