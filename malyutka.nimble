@@ -1,4 +1,4 @@
-version       = "0.3.2"
+version       = "0.3.3"
 author        = "Malyutka contributors"
 description   = "Malyutka (9M14): small, robust, model-neutral Linux agent harness in Nim"
 license       = "MIT"

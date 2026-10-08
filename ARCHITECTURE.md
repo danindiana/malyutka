@@ -178,22 +178,70 @@ kernel, not just the CLI.
 intent ─fdatasync─► decision ─fdatasync─► started ─fdatasync─► EXECUTE ─► outcome ─fdatasync─►
 ```
 
-**Integrity (0.3.2).**
-- **Framing.** Every record is written as `"\n" & json & "\n"`, so a
-  fragment torn by any crashed writer is terminated by the next writer's
-  leading newline.
-  - 0.3.1 instead repaired a torn tail at open time. That missed writers
-    that already had the file open: demonstrated, and the record appended
-    after the fragment was lost. If that record had been a `started`, an
-    action that ran would have read as never started.
-  - The repair code, with its unchecked writes, is gone.
-- **Writer identity.** Each record carries its writer `w` (the run ID), a
-  per-writer sequence number `n`, and a CRC-32 over the rest of the record.
-- **Locking.** flock `LOCK_EX` around appends and `LOCK_SH` around scans.
-  This is defense in depth: on a local Linux filesystem `O_APPEND` writes are
-  already atomic, which is why the flock mutant survives the 8-writer stress
-  test. It matters where append atomicity does not hold (e.g. NFS) and for
-  scan consistency.
+**Strict decoding (0.3.3).** A record counts only if
+
+```
+ValidRecord = SchemaValid ∧ ChecksumValid ∧ SequenceValid ∧ TransitionValid
+```
+
+- **Schema:** known `rec` type; `action`, `w`, `n`, `ts`, `crc` mandatory;
+  per-type fields with the right JSON kinds and values (`verdict` ∈
+  ALLOW|DENY, etc.).
+  - 0.3.2 skipped checksum verification for records *without* `crc`, so a
+    forged record lacking it was accepted. This was demonstrated: it flipped
+    UNKNOWN_OUTCOME to COMPLETED.
+- **Checksum:** CRC-32 over the record without `crc`.
+- **Sequence:** per writer, `n` must be exactly 1, 2, 3, … *in file order*.
+  - 0.3.2 sorted the numbers before checking, so duplicates and reorderings
+    passed. A reordering made an executed action read as AUTHORIZED, i.e.
+    never run.
+  - Writer IDs are unique per journal handle (a 48-bit random suffix). 0.3.2
+    reused `operator-$USER` with `n` restarting at 1 for every `journal`
+    command.
+- **Transitions:** per action, `intent → decision → [ALLOW] started →
+  outcome`, each exactly once, all by the writer that wrote the intent.
+  Operator `ack` is only allowed from UNKNOWN_OUTCOME; `reconcile` from
+  UNKNOWN_OUTCOME or ACKNOWLEDGED_UNRESOLVED.
+
+**Classification.** A line that does not parse at all is *torn*: a write
+that never completed, so the step it guarded never proceeded. Anything
+parseable that fails a predicate is *corrupt*.
+
+**Liveness (0.3.3).** Every journal handle holds an exclusive flock on
+`<state>/runs/<writer>.lock` while open. The kernel releases it when the
+process dies, including under SIGKILL.
+- "Started, no outcome" is therefore IN_PROGRESS while its run is alive, and
+  UNKNOWN_OUTCOME only once the run is dead.
+- Operators cannot ack or reconcile a running action. Without this, a
+  reconcile of a live action followed by its real `outcome` would be an
+  invalid transition, and the journal would falsely read CORRUPT.
+
+**Operator transactions (0.3.3).** `journal --ack/--reconcile` scan and
+append under one exclusive lock (`Journal.transact`).
+- 0.3.2 scanned, released, then appended: eight concurrent reconciles of one
+  action wrote eight records, with both COMPLETED and FAILED.
+
+**Framing and locking.**
+- Every record is written as `"\n" & json & "\n"`, so a fragment torn by any
+  crashed writer is terminated by the next writer's leading newline. 0.3.1's
+  open-time tail repair missed writers that already had the file open.
+- flock `LOCK_EX` around appends and `LOCK_SH` around scans. On a local
+  Linux filesystem `O_APPEND` writes are already atomic, so the append-lock
+  mutant survives; the lock matters for NFS-like filesystems, for scan
+  consistency, and for `transact`.
+
+**Threat model.** CRC-32 detects accidental corruption and casual tampering.
+It is *not* a defense against an adversary running as the operator's uid,
+who can recompute it. Remote agents, plugins or multi-user operation would
+need a keyed hash chain or an external append-only service.
+
+**Migration.** There is no legacy path. Two kinds of existing journal read
+as CORRUPT under the strict decoder:
+- a 0.3.1 journal (records have no `crc`);
+- a 0.3.2 journal in which two operator commands shared a writer ID.
+
+Both versions existed only on test machines; move such a journal aside
+(`mv journal.jsonl journal.jsonl.old`).
 
 **Health of a scan.**
 
@@ -210,7 +258,8 @@ intent ─fdatasync─► decision ─fdatasync─► started ─fdatasync─►
 | PREPARED | intent only; never authorized |
 | DENIED | authorization refused |
 | AUTHORIZED | allowed, but `started` never became durable: never ran |
-| UNKNOWN_OUTCOME | started, no outcome: may or may not have happened; surfaced every run; never re-executed |
+| IN_PROGRESS | started, no outcome, owning run still alive: not reconcilable |
+| UNKNOWN_OUTCOME | started, no outcome, owning run dead: may or may not have happened; surfaced every run; never re-executed |
 | COMPLETED / FAILED | ran; outcome recorded |
 | NOT_EXECUTED | started, but confinement refused execution |
 | RECONCILED | operator established the real outcome: `journal --reconcile:ID --as:completed\|failed\|not-executed` |
@@ -235,7 +284,7 @@ calls too. Strict servers (vLLM, OpenAI) reject anything else with HTTP 400.
 ## Events
 
 `run.start`, `confinement.waived`, `confinement.failed`,
-`journal.unknown_outcome`, `journal.degraded`, `journal.torn`, `journal.corrupt`, `step.start`, `tool.proposed`,
+`journal.unknown_outcome` (dead-owner actions only), `journal.degraded`, `journal.torn`, `journal.corrupt`, `step.start`, `tool.proposed`,
 `policy.decision`, `tool.cancelled`, `tool.result`, `agent.final`,
 `agent.halt`.
 
@@ -254,11 +303,19 @@ protection and confirming the test fails.
 - In 0.3.2 every new defense is caught by its mutant: realpath, `--bind-fd`,
   host process group, framing, CRC, sequence gaps, kernel placement check,
   `O_NOFOLLOW`.
-- The flock mutant survives (see above). That is reported, not hidden.
+- Two mutants survive, reported rather than papered over with contrived
+  tests:
+  - **Append flock:** see the journal section.
+  - **Strict `n == last+1` relaxed to gap-only:** under the current
+    transition rules every exact replay is also an illegal transition, and
+    every reordering starts with an upward jump that gap detection reports.
+    The strict rule is kept for when transitions are relaxed (e.g.
+    idempotent records).
 
 **Self-matching process checks.** Process checks must not match their own
-command line: `pgrep -f` matching the shell running it, or the fake server's
-argv, produced three false results in development.
+command line. `pgrep -f`/`pkill -f`/awk patterns matched the shell running
+them, or the fake server's argv, four times in development (once killing the
+test shell).
 
 **Suites.**
 - `tests/test_core.nim`
@@ -271,7 +328,7 @@ argv, produced three false results in development.
 
 | Nim | How | Result |
 |---|---|---|
-| 1.6.14 (native, Ubuntu apt) | full build + all suites, root and unprivileged | 62 unit + 15 integration pass |
+| 1.6.14 (native, Ubuntu apt) | full build + all suites, root and unprivileged | 75 unit + 17 integration pass |
 | 2.2.4 (official compiler built to wasm, `@live-codes/nim-wasm` 0.4.0) | `nim check --os:linux --cpu:amd64` on the CLI and all three test files, run offline in bwrap | 0 diagnostics in Malyutka sources |
 
 The 2.2.4 check stops at semantic analysis: no 2.x code generation, linking

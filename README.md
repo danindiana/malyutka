@@ -50,9 +50,9 @@ nimble build
 nimble test
 ```
 
-**Compile status (0.3.2):**
-- **Nim 1.6.14:** builds warning-free with bubblewrap 0.9.0 and passes 77
-  tests (62 unit/invariant/adversarial + 15 CLI integration), both as root
+**Compile status (0.3.3):**
+- **Nim 1.6.14:** builds warning-free with bubblewrap 0.9.0 and passes 92
+  tests (75 unit/invariant/adversarial + 17 CLI integration), both as root
   and as an **unprivileged user**.
 - **Nim 2.2.4:** passes a semantic `nim check --os:linux` with zero
   diagnostics in Malyutka's sources, using the official compiler built to
@@ -118,8 +118,11 @@ workspace and invisible to the sandbox. If Malyutka dies mid-action:
 ```
 
 The state directory (`MALYUTKA_STATE_DIR`) must not overlap the workspace.
-Records carry per-writer sequence numbers and checksums, so a tampered or
-truncated-in-the-middle journal is reported CORRUPT and runs are refused.
+Records are strictly decoded: schema, checksum, per-writer sequence and
+per-action state transitions. A tampered, replayed or reordered journal is
+reported CORRUPT and runs are refused. An action whose run is still alive is
+IN_PROGRESS and cannot be acknowledged or reconciled; operator commands
+check and write under one lock.
 
 Interrupted actions are surfaced on every run until acknowledged. They are
 never re-executed.

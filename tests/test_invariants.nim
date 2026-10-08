@@ -237,8 +237,9 @@ suite "write-ahead journal":
     check fileExists(marker)
     check "journal.degraded" in kinds
     check "outcome not journaled" in r.messages[3].content
+    check unknownOutcomes(j.path).len == 0      # run's handle still open: IN_PROGRESS
+    j.close()                                   # run over
     check unknownOutcomes(j.path).len == 1
-    j.close()
 
   test "J6 crash after 'started': UNKNOWN_OUTCOME surfaced on next run, never re-executed":
     var j = tmpJournal("j6")
@@ -404,3 +405,165 @@ suite "journal integrity (0.3.2)":
     j.append(%*{"rec": "intent", "action": "U", "args": {"command": "echo 'Малютка ✓ \"q\" \\ \t'"}})
     check scanJournal(j.path).health == jhOk
     j.close()
+
+suite "strict journal decoding (0.3.3)":
+  # Each test reproduces a 0.3.2 acceptance the audit identified (or the
+  # liveness / transaction issues found while fixing them).
+  proc started(j: Journal; id: string) =
+    j.append(%*{"rec": "intent", "action": id, "tool": "shell", "args": {}})
+    j.append(%*{"rec": "decision", "action": id, "verdict": "ALLOW"})
+    j.append(%*{"rec": "started", "action": id})
+  proc nonblank(path: string): seq[string] =
+    for l in readFile(path).splitLines:
+      if l.strip.len > 0: result.add l
+  proc stateOf(path, id: string): string =
+    for a in scanJournal(path).actions:
+      if a.action == id: return $a.state
+  proc deadJournal(name: string; ids: openArray[string]): string =
+    let j = tmpJournal(name)
+    for id in ids: j.started(id)
+    j.close()                                   # the run is over: its writer is dead
+    j.path
+
+  test "S1 a record without crc/w/n is CORRUPT (no unchecksummed bypass)":
+    let p = deadJournal("s1", ["A"])
+    writeFile(p, readFile(p) & "\n{\"rec\":\"outcome\",\"action\":\"A\",\"state\":\"COMPLETED\",\"ok\":true}\n")
+    let scan = scanJournal(p)
+    check scan.health == jhCorrupt
+    check stateOf(p, "A") == "UNKNOWN_OUTCOME"
+
+  test "S1b a forged record with plausible w/n/ts but no crc is CORRUPT":
+    # Isolates the checksum requirement: only `crc` is missing.
+    let p = deadJournal("s1b", ["A"])
+    let last = parseJson(nonblank(p)[^1])
+    let forged = %*{"rec": "outcome", "action": "A", "state": "COMPLETED", "ok": true,
+                    "ts": last["ts"].getStr, "w": last["w"].getStr, "n": last["n"].getInt + 1}
+    writeFile(p, readFile(p) & "\n" & $forged & "\n")
+    check scanJournal(p).health == jhCorrupt
+    check stateOf(p, "A") == "UNKNOWN_OUTCOME"
+
+  test "S2b a transition-valid reordering is still CORRUPT (sequence, not transitions)":
+    # Two independent intents swapped: every transition is legal, only the
+    # per-writer sequence order exposes the rewrite. (Exact replays are also
+    # always illegal transitions, so the strict n == last+1 rule adds no
+    # separately testable detection today; see ARCHITECTURE.md.)
+    let j = tmpJournal("s2b")
+    j.append(%*{"rec": "intent", "action": "A"})
+    j.append(%*{"rec": "intent", "action": "B"})
+    j.close()
+    let ls = nonblank(j.path)
+    writeFile(j.path, @[ls[1], ls[0]].join("\n") & "\n")
+    check scanJournal(j.path).health == jhCorrupt
+
+  test "S2 a replayed (duplicate) record is CORRUPT":
+    let p = deadJournal("s2", ["A"])
+    let ls = nonblank(p)
+    writeFile(p, (ls & ls[^1]).join("\n") & "\n")
+    check scanJournal(p).health == jhCorrupt
+
+  test "S3 reordered records are CORRUPT (executed action cannot read as never-run)":
+    let p = deadJournal("s3", ["A"])
+    let ls = nonblank(p)
+    writeFile(p, @[ls[2], ls[0], ls[1]].join("\n") & "\n")
+    check scanJournal(p).health == jhCorrupt
+
+  test "S4 an outcome for a DENIED action is CORRUPT":
+    let j = tmpJournal("s4")
+    j.append(%*{"rec": "intent", "action": "A"})
+    j.append(%*{"rec": "decision", "action": "A", "verdict": "DENY"})
+    j.append(%*{"rec": "outcome", "action": "A", "state": "COMPLETED", "ok": true})
+    j.close()
+    check scanJournal(j.path).health == jhCorrupt
+
+  test "S5 another run cannot write this run's decision/started/outcome":
+    let p = deadJournal("s5", ["A"])
+    let o = openJournal(p, writer = "run2")
+    o.append(%*{"rec": "outcome", "action": "A", "state": "COMPLETED", "ok": true})
+    o.close()
+    check scanJournal(p).health == jhCorrupt
+
+  test "S6 transitions: record before intent, second intent, second started, unknown rec":
+    for (name, recs) in [
+        ("s6a", @[%*{"rec": "started", "action": "A"}]),
+        ("s6b", @[%*{"rec": "intent", "action": "A"}, %*{"rec": "intent", "action": "A"}]),
+        ("s6c", @[%*{"rec": "intent", "action": "A"}, %*{"rec": "decision", "action": "A", "verdict": "ALLOW"},
+                  %*{"rec": "started", "action": "A"}, %*{"rec": "started", "action": "A"}]),
+        ("s6d", @[%*{"rec": "intent", "action": "A"}, %*{"rec": "teleport", "action": "A"}]),
+        ("s6e", @[%*{"rec": "intent", "action": "A"}, %*{"rec": "decision", "action": "A", "verdict": "MAYBE"}])]:
+      let j = tmpJournal(name)
+      for r in recs: j.append(r)
+      j.close()
+      checkpoint name
+      check scanJournal(j.path).health == jhCorrupt
+
+  test "S7 every journal handle gets its own writer id (operator commands never collide)":
+    let p = deadJournal("s7", ["A", "B"])
+    for id in ["A", "B"]:
+      let op = openJournal(p, writer = "operator-ben")
+      op.append(%*{"rec": "ack", "action": id})
+      op.close()
+    check scanJournal(p).health == jhOk
+    check stateOf(p, "A") == "ACKNOWLEDGED_UNRESOLVED"
+
+  test "S8 started-without-outcome is IN_PROGRESS while the owner lives, UNKNOWN once dead":
+    let j = tmpJournal("s8")
+    j.started("A")
+    check stateOf(j.path, "A") == "IN_PROGRESS"
+    check unknownOutcomes(j.path).len == 0
+    j.close()
+    check stateOf(j.path, "A") == "UNKNOWN_OUTCOME"
+
+  test "S9 liveness survives SIGKILL of the owner (the kernel drops the flock)":
+    let path = testTmp / "state" / "s9.jsonl"
+    removeFile(path)
+    let pid = posix.fork()
+    if pid == 0:
+      let j = openJournal(path, writer = "victim")
+      j.started("K")
+      discard posix.kill(posix.getpid(), SIGSTOP)  # wait here, alive, lock held
+      quit(0)
+    var st: cint
+    discard posix.waitpid(pid, st, WUNTRACED)
+    check stateOf(path, "K") == "IN_PROGRESS"
+    discard posix.kill(pid, SIGKILL)
+    discard posix.waitpid(pid, st, 0)
+    check stateOf(path, "K") == "UNKNOWN_OUTCOME"
+
+  test "S10 an operator cannot ack or reconcile an action whose run is alive":
+    let j = tmpJournal("s10")
+    j.started("A")
+    let op = openJournal(j.path, writer = "operator")
+    let rec = op.transact(proc(scan: JournalScan): JsonNode =
+      for a in scan.actions:
+        if a.action == "A" and a.state == asUnknownOutcome:
+          return %*{"rec": "ack", "action": "A"}
+      nil)
+    check rec.isNil
+    op.close(); j.close()
+
+  test "S11 eight concurrent reconciles of one action: exactly one wins":
+    let p = deadJournal("s11", ["A"])
+    var kids: seq[Pid]
+    for k in 0 ..< 8:
+      let pid = posix.fork()
+      if pid == 0:
+        let op = openJournal(p, writer = "op" & $k)
+        discard op.transact(proc(scan: JournalScan): JsonNode =
+          for a in scan.actions:
+            if a.action == "A" and a.state in {asUnknownOutcome, asAckUnresolved}:
+              sleep(30)                               # widen the window
+              return %*{"rec": "reconcile", "action": "A",
+                        "as": (if k mod 2 == 0: "COMPLETED" else: "FAILED")}
+          nil)
+        op.close()
+        quit(0)
+      kids.add pid
+    for k in kids:
+      var st: cint
+      discard posix.waitpid(k, st, 0)
+    var n = 0
+    for l in nonblank(p):
+      if "\"reconcile\"" in l: inc n
+    check n == 1
+    check scanJournal(p).health == jhOk
+    check stateOf(p, "A") == "RECONCILED"

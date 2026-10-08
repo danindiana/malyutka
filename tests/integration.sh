@@ -88,6 +88,29 @@ PY
   || bad "tampered journal: journal exit $rc1, run exit $rc2"
 cp "$WORK/journal.bak" "$MALYUTKA_STATE_DIR/journal.jsonl"
 
+# 5e. Liveness: an action whose run is still alive cannot be reconciled; after SIGKILL it can.
+python3 -I "$HERE/fake_oneshot.py" "$((P2 + 2))" 'sleep 4' & sleep 0.6
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P2 + 2)) --allow-shell --json \
+  'live' > /dev/null 2>&1 &
+M=$!; sleep 1.3
+out=$("$BIN" journal 2>&1)
+id3=$(grep 'in progress' <<<"$out" | grep -oE '9M14-[0-9a-f]+-[0-9]{4}' | head -1)
+"$BIN" journal --reconcile:"$id3" --as:completed >/dev/null 2>&1; rc_alive=$?
+kill -9 $M; wait $M 2>/dev/null
+# 6 operators race to reconcile the now-dead action: exactly one may win.
+racers=()
+for k in 1 2 3 4 5 6; do
+  ( "$BIN" journal --reconcile:"$id3" --as:failed >/dev/null 2>&1; echo $? > "$WORK/race.$k" ) &
+  racers+=($!)
+done
+wait "${racers[@]}"   # only the racers: the fake servers run until cleanup
+wins=$(cat "$WORK"/race.* 2>/dev/null | grep -c '^0$')
+if [ -n "$id3" ] && [ $rc_alive -eq 2 ] && [ "$wins" = 1 ]; then
+  ok "live action not reconcilable; after SIGKILL exactly 1 of 6 racing reconciles wins"
+else bad "liveness/race: id='$id3' rc_alive=$rc_alive wins=$wins"; fi
+"$BIN" journal >/dev/null 2>&1; rc=$?
+[ $rc -eq 0 ] && ok "journal healthy after the race (exit 0)" || bad "journal after race exit $rc"
+
 # 6. Fail closed: no usable sandbox -> refuse to run.
 PATH=/nonexistent "$BIN" run --allow-shell 'x' >/dev/null 2>&1; rc=$?
 [ $rc -eq 3 ] && ok "no bwrap -> refuses to run (exit 3)" || bad "no bwrap exit $rc"

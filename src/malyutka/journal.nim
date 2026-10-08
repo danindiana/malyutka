@@ -4,42 +4,62 @@
 ##
 ## Each record is appended and fdatasync'd BEFORE the next step proceeds, so a
 ## crash at any point leaves an accurate prefix. An action with `started` but
-## no `outcome` is UNKNOWN_OUTCOME: it may or may not have taken effect, and
-## Malyutka never re-executes it. If a record cannot be made durable, the
-## action does not run.
+## no `outcome` whose run is dead is UNKNOWN_OUTCOME: it may or may not have
+## taken effect, and Malyutka never re-executes it. If a record cannot be made
+## durable, the action does not run.
 ##
-## Integrity (0.3.2):
-## * Framing: each record is written as "\n" & json & "\n". A fragment torn by
-##   ANY crashed writer is therefore always terminated by the next writer's
-##   leading newline; no record can be glued to it. (0.3.1 repaired the tail
-##   at open time, which missed writers that already had the file open.)
-## * flock: LOCK_EX around every append, LOCK_SH around every scan.
-## * Each record carries its writer id `w`, a per-writer sequence number `n`
-##   and a CRC-32 `crc` of the record without `crc`. A scan distinguishes a
-##   TORN line (not parseable: a write that never completed, so the step it
-##   guarded never proceeded) from CORRUPTION (a parseable record with a bad
-##   CRC, or a gap in a writer's sequence: durable history lost or altered).
-##   Corruption fails closed: runs are refused until the operator inspects.
+## Framing: each record is written as "\n" & json & "\n", so a fragment torn
+## by ANY crashed writer is terminated by the next writer's leading newline.
+##
+## Strict decoding (0.3.3). A record is valid iff
+##   SchemaValid ∧ ChecksumValid ∧ SequenceValid ∧ TransitionValid:
+## * Schema: known `rec`, required fields with the right JSON kinds; `w`, `n`,
+##   `crc`, `ts` are mandatory (0.3.2 silently accepted records without `crc`,
+##   which let a forged record bypass checksum verification).
+## * Checksum: CRC-32 over the record without `crc`.
+## * Sequence: for each writer, `n` is exactly 1, 2, 3, ... in FILE order. A
+##   gap, duplicate (replay) or reordering is corruption. (0.3.2 sorted before
+##   checking, so duplicates and reorderings passed.) Writer ids are unique per
+##   journal handle (a random suffix), so independent commands never collide.
+## * Transitions: per action, intent -> decision -> [ALLOW] started -> outcome,
+##   each exactly once, all by the writer that wrote the intent; operator
+##   `ack`/`reconcile` only on an UNKNOWN_OUTCOME (dead-owner) action.
+## A line that does not parse at all is TORN (a write that never completed;
+## the step it guarded never proceeded). Anything parseable that fails a
+## predicate is CORRUPT, and corruption fails closed.
+##
+## Liveness: every journal handle holds an exclusive flock on
+## <state>/runs/<writer>.lock for its lifetime. The kernel drops it when the
+## process dies (including SIGKILL), so "started, no outcome" is IN_PROGRESS
+## while the owner lives and UNKNOWN_OUTCOME only once it is dead. Operators
+## cannot ack or reconcile an action that is still running.
+##
+## Operator decisions (`transact`) scan and append under ONE exclusive lock,
+## so a concurrent writer cannot change the action between check and append.
 ##
 ## Containment: the journal must be a regular file owned by the operator,
 ## opened with O_NOFOLLOW, in a directory whose canonical path does not
-## overlap the workspace (see `checkJournalPlacement`). The sandbox cannot
-## see it; the agent cannot rewrite its own record.
+## overlap the workspace (see `checkJournalPlacement`). CRC-32 detects
+## accidental corruption and casual tampering; it is NOT a defense against an
+## adversary with the operator's uid (that needs a keyed hash chain or an
+## external append-only service).
 
-import std/[algorithm, json, os, posix, strutils, tables, times]
+import std/[json, os, posix, strutils, sysrand, tables, times]
 
 proc c_flock(fd: cint; op: cint): cint {.importc: "flock", header: "<sys/file.h>".}
 var lO_NOFOLLOW {.importc: "O_NOFOLLOW", header: "<fcntl.h>".}: cint
 const LOCK_SH = 1.cint
 const LOCK_EX = 2.cint
+const LOCK_NB = 4.cint
 const LOCK_UN = 8.cint
 
 type
   JournalError* = object of CatchableError
   Journal* = ref object
     path*: string      ## canonical
-    writer*: string
+    writer*: string    ## unique per handle
     fd: cint
+    lockFd: cint       ## liveness lock, held for the handle's lifetime
     seqNo: int
     failAfter*: int    ## test hook: fail appends after this many (-1 = never)
 
@@ -47,7 +67,8 @@ type
     asPrepared = "PREPARED"               ## intent only: never authorized
     asDenied = "DENIED"                   ## authorization refused
     asAuthorized = "AUTHORIZED"           ## allowed, `started` never durable: never ran
-    asUnknownOutcome = "UNKNOWN_OUTCOME"  ## started, no outcome: may have happened
+    asInProgress = "IN_PROGRESS"          ## started, no outcome, owner still alive
+    asUnknownOutcome = "UNKNOWN_OUTCOME"  ## started, no outcome, owner dead: may have happened
     asCompleted = "COMPLETED"
     asFailed = "FAILED"                   ## ran, reported failure
     asNotExecuted = "NOT_EXECUTED"        ## started, but confinement refused it
@@ -57,6 +78,7 @@ type
   ActionSummary* = object
     action*: string
     run*: string
+    owner*: string
     tool*: string
     args*: JsonNode
     state*: ActionState
@@ -70,6 +92,8 @@ type
     health*: JournalHealth
     tornLines*: seq[int]
     problems*: seq[string]   ## corruption details
+
+  Liveness* = proc(writer: string): bool {.closure.}
 
 # ---- CRC-32 (IEEE) --------------------------------------------------------
 
@@ -110,7 +134,31 @@ proc checkJournalPlacement*(journalDir, workspace: string) =
     raise newException(JournalError, "journal directory '" & jd &
       "' overlaps the workspace '" & ws & "': the agent could rewrite its own record")
 
+# ---- liveness locks ----------------------------------------------------------
+
+proc safeName(w: string): string =
+  for ch in w:
+    result.add(if ch.isAlphaNumeric or ch in {'-', '_', '.'}: ch else: '_')
+
+proc lockPath(journalPath, writer: string): string =
+  parentDir(journalPath) / "runs" / (safeName(writer) & ".lock")
+
+proc writerAlive*(journalPath, writer: string): bool =
+  ## True iff the handle that wrote as `writer` is still open somewhere: its
+  ## exclusive flock is held. The kernel releases it on process death.
+  let p = lockPath(journalPath, writer)
+  let fd = posix.open(cstring(p), O_RDONLY or O_CLOEXEC or lO_NOFOLLOW)
+  if fd < 0: return false
+  defer: discard posix.close(fd)
+  if c_flock(fd, LOCK_EX or LOCK_NB) == 0:
+    discard c_flock(fd, LOCK_UN)
+    return false
+  errno == EWOULDBLOCK
+
 # ---- writing -----------------------------------------------------------------
+
+proc randHex(nbytes: int): string =
+  for b in urandom(nbytes): result.add toHex(BiggestInt(b), 2).toLowerAscii
 
 proc openJournal*(path = defaultJournalPath(); writer = ""): Journal =
   let dir = canonicalDir(parentDir(path))
@@ -124,13 +172,24 @@ proc openJournal*(path = defaultJournalPath(); writer = ""): Journal =
     discard posix.close(fd)
     raise newException(JournalError, "refusing journal " & canon &
       ": not a regular file owned by uid " & $getuid())
-  Journal(path: canon, fd: fd, failAfter: -1,
-          writer: (if writer.len > 0: writer else: "pid" & $getCurrentProcessId()))
+  # Unique writer id per handle: two handles never share a sequence space.
+  let base = if writer.len > 0: writer else: "pid" & $getCurrentProcessId()
+  let w = base & "." & randHex(6)
+  discard canonicalDir(dir / "runs")
+  let lfd = posix.open(cstring(lockPath(canon, w)), O_RDWR or O_CREAT or O_CLOEXEC or lO_NOFOLLOW, 0o600)
+  if lfd < 0 or c_flock(lfd, LOCK_EX or LOCK_NB) != 0:
+    discard posix.close(fd)
+    if lfd >= 0: discard posix.close(lfd)
+    raise newException(JournalError, "cannot take liveness lock for writer " & w)
+  Journal(path: canon, fd: fd, lockFd: lfd, failAfter: -1, writer: w)
 
 proc close*(j: Journal) =
   if j != nil and j.fd >= 0:
     discard posix.close(j.fd)
     j.fd = -1
+    discard posix.close(j.lockFd)        # releases the liveness lock
+    removeFile(lockPath(j.path, j.writer))
+    j.lockFd = -1
 
 proc writeAll(fd: cint; data: string) =
   var off = 0
@@ -141,8 +200,13 @@ proc writeAll(fd: cint; data: string) =
       raise newException(JournalError, "journal write failed: " & $strerror(errno))
     off += n
 
-proc append*(j: Journal; rec: JsonNode) =
-  ## Durable or exception: never returns having silently lost the record.
+proc lockEx(j: Journal) =
+  if c_flock(j.fd, LOCK_EX) != 0:
+    raise newException(JournalError, "journal lock failed: " & $strerror(errno))
+
+proc unlock(j: Journal) = discard c_flock(j.fd, LOCK_UN)
+
+proc appendUnlocked(j: Journal; rec: JsonNode) =
   if j.failAfter >= 0 and j.seqNo >= j.failAfter:
     raise newException(JournalError, "journal write refused (test hook)")
   var r = rec.copy
@@ -150,28 +214,126 @@ proc append*(j: Journal; rec: JsonNode) =
   r["w"] = %j.writer
   r["n"] = %(j.seqNo + 1)
   r["crc"] = %crc32($r)
-  let framed = "\n" & $r & "\n"
-  if c_flock(j.fd, LOCK_EX) != 0:
-    raise newException(JournalError, "journal lock failed: " & $strerror(errno))
-  try:
-    writeAll(j.fd, framed)
-    if fdatasync(j.fd) != 0:
-      raise newException(JournalError, "journal fdatasync failed: " & $strerror(errno))
-  finally:
-    discard c_flock(j.fd, LOCK_UN)
+  writeAll(j.fd, "\n" & $r & "\n")
+  if fdatasync(j.fd) != 0:
+    raise newException(JournalError, "journal fdatasync failed: " & $strerror(errno))
   inc j.seqNo
 
-# ---- reading -------------------------------------------------------------------
+proc append*(j: Journal; rec: JsonNode) =
+  ## Durable or exception: never returns having silently lost the record.
+  j.lockEx()
+  try: j.appendUnlocked(rec)
+  finally: j.unlock()
 
-proc readLocked(path: string): string =
-  let fd = posix.open(cstring(path), O_RDONLY or O_CLOEXEC or lO_NOFOLLOW)
-  if fd < 0:
-    if errno == ENOENT: return ""
-    raise newException(JournalError, "cannot read journal " & path & ": " & $strerror(errno))
-  defer: discard posix.close(fd)
-  if c_flock(fd, LOCK_SH) != 0:
-    raise newException(JournalError, "journal lock failed: " & $strerror(errno))
-  defer: discard c_flock(fd, LOCK_UN)
+# ---- strict decoding ---------------------------------------------------------
+
+const KnownRecs = ["intent", "decision", "started", "outcome", "reconcile", "ack"]
+
+proc schemaProblem(r: JsonNode): string =
+  ## "" if the record has every required field with the right JSON kind.
+  template need(k: string; kinds: set[JsonNodeKind]) =
+    if not r.hasKey(k) or r[k].kind notin kinds: return "field '" & k & "' missing or mistyped"
+  need("rec", {JString}); need("action", {JString}); need("w", {JString})
+  need("n", {JInt}); need("crc", {JString}); need("ts", {JString})
+  let rec = r["rec"].getStr
+  if rec notin KnownRecs: return "unknown record type '" & rec & "'"
+  if r["action"].getStr.len == 0 or r["w"].getStr.len == 0: return "empty action or writer"
+  if r["n"].getInt < 1: return "sequence number < 1"
+  case rec
+  of "intent":
+    if r.hasKey("tool") and r["tool"].kind != JString: return "intent.tool mistyped"
+  of "decision":
+    need("verdict", {JString})
+    if r["verdict"].getStr notin ["ALLOW", "DENY"]: return "decision.verdict invalid"
+  of "outcome":
+    need("state", {JString}); need("ok", {JBool})
+    if r["state"].getStr notin ["COMPLETED", "NOT_EXECUTED"]: return "outcome.state invalid"
+  of "reconcile":
+    need("as", {JString})
+    if r["as"].getStr notin ["COMPLETED", "FAILED", "NOT_EXECUTED"]: return "reconcile.as invalid"
+  else: discard
+  ""
+
+proc scanContent*(content: string; alive: Liveness): JournalScan =
+  var byId = initOrderedTable[string, ActionSummary]()
+  var lastN = initTable[string, int]()
+  var lineNo = 0
+  proc corrupt(res: var JournalScan; line: int; msg: string) =
+    res.problems.add "line " & $line & ": " & msg
+  for line in content.splitLines:
+    inc lineNo
+    if line.strip.len == 0: continue
+    var r: JsonNode
+    try: r = parseJson(line)
+    except JsonParsingError, ValueError:
+      result.tornLines.add lineNo
+      continue
+    if r.kind != JObject:
+      result.corrupt(lineNo, "not a JSON object"); continue
+    # SchemaValid
+    let sp = schemaProblem(r)
+    if sp.len > 0:
+      result.corrupt(lineNo, sp); continue
+    # ChecksumValid
+    var body = r.copy
+    body.delete("crc")
+    if crc32($body) != r["crc"].getStr:
+      result.corrupt(lineNo, "checksum mismatch"); continue
+    # SequenceValid: exactly last+1 in file order, per writer
+    let w = r["w"].getStr
+    let n = r["n"].getInt
+    let expect = lastN.getOrDefault(w, 0) + 1
+    if n != expect:
+      result.corrupt(lineNo, "writer " & w & ": sequence " & $n & ", expected " & $expect &
+        (if n < expect: " (duplicate or reordered record)" else: " (records missing)"))
+      lastN[w] = max(lastN.getOrDefault(w, 0), n)
+      continue
+    lastN[w] = n
+    # TransitionValid
+    let id = r["action"].getStr
+    let rec = r["rec"].getStr
+    if rec == "intent":
+      if byId.hasKey(id):
+        result.corrupt(lineNo, "action " & id & ": second intent"); continue
+      byId[id] = ActionSummary(action: id, state: asPrepared, owner: w, run: r{"run"}.getStr,
+                               tool: r{"tool"}.getStr, args: r{"args"})
+      continue
+    if not byId.hasKey(id):
+      result.corrupt(lineNo, "action " & id & ": '" & rec & "' before its intent"); continue
+    var a = byId[id]
+    let operatorRec = rec in ["reconcile", "ack"]
+    if not operatorRec and w != a.owner:
+      result.corrupt(lineNo, "action " & id & ": '" & rec & "' by writer " & w &
+                     ", but the action belongs to " & a.owner); continue
+    let ok = case rec
+      of "decision": a.state == asPrepared
+      of "started": a.state == asAuthorized
+      of "outcome": a.state == asUnknownOutcome          # provisional state for "started"
+      of "ack": a.state == asUnknownOutcome
+      of "reconcile": a.state in {asUnknownOutcome, asAckUnresolved}
+      else: false
+    if not ok:
+      result.corrupt(lineNo, "action " & id & ": invalid transition '" & rec & "' from " & $a.state)
+      continue
+    case rec
+    of "decision": a.state = (if r["verdict"].getStr == "ALLOW": asAuthorized else: asDenied)
+    of "started": a.state = asUnknownOutcome; a.startedAt = r["ts"].getStr
+    of "outcome":
+      a.state = (if r["state"].getStr == "NOT_EXECUTED": asNotExecuted
+                 elif r["ok"].getBool: asCompleted else: asFailed)
+    of "ack": a.state = asAckUnresolved
+    of "reconcile": a.state = asReconciled; a.reconciledAs = r["as"].getStr
+    else: discard
+    byId[id] = a
+  for _, a in byId.mpairs:
+    if a.state == asUnknownOutcome and alive(a.owner): a.state = asInProgress
+  for _, a in byId: result.actions.add a
+  result.health =
+    if result.problems.len > 0: jhCorrupt
+    elif result.tornLines.len > 0: jhTorn
+    else: jhOk
+
+proc readFd(fd: cint): string =
   var buf: array[65536, char]
   while true:
     let n = posix.read(fd, addr buf[0], buf.len)
@@ -181,64 +343,39 @@ proc readLocked(path: string): string =
     if n == 0: break
     for i in 0 ..< n: result.add buf[i]
 
+proc openForRead(path: string): cint =
+  result = posix.open(cstring(path), O_RDONLY or O_CLOEXEC or lO_NOFOLLOW)
+  if result < 0 and errno != ENOENT:
+    raise newException(JournalError, "cannot read journal " & path & ": " & $strerror(errno))
+
+proc livenessFor(path: string): Liveness =
+  result = proc(w: string): bool = writerAlive(path, w)
+
 proc scanJournal*(path = defaultJournalPath()): JournalScan =
-  var byId = initOrderedTable[string, ActionSummary]()
-  var seqs = initTable[string, seq[int]]()
-  var lineNo = 0
-  for line in readLocked(path).splitLines:
-    inc lineNo
-    if line.strip.len == 0: continue
-    var r: JsonNode
-    try: r = parseJson(line)
-    except JsonParsingError, ValueError:
-      result.tornLines.add lineNo
-      continue
-    if r.kind != JObject:
-      result.tornLines.add lineNo
-      continue
-    if r.hasKey("crc"):
-      var body = r.copy
-      let crc = body["crc"].getStr
-      body.delete("crc")
-      if crc32($body) != crc:
-        result.problems.add "line " & $lineNo & ": checksum mismatch"
-        continue
-      seqs.mgetOrPut(r{"w"}.getStr, @[]).add r{"n"}.getInt
-    let id = r{"action"}.getStr("")
-    if id.len == 0: continue
-    var a = byId.getOrDefault(id, ActionSummary(action: id, state: asPrepared))
-    case r{"rec"}.getStr("")
-    of "intent":
-      a.run = r{"run"}.getStr; a.tool = r{"tool"}.getStr; a.args = r{"args"}
-    of "decision":
-      a.state = (if r{"verdict"}.getStr == "ALLOW": asAuthorized else: asDenied)
-    of "started":
-      a.state = asUnknownOutcome; a.startedAt = r{"ts"}.getStr
-    of "outcome":
-      a.state = case r{"state"}.getStr
-        of "NOT_EXECUTED": asNotExecuted
-        else: (if r{"ok"}.getBool(true): asCompleted else: asFailed)
-    of "reconcile":
-      if a.state in {asUnknownOutcome, asAckUnresolved}:
-        a.state = asReconciled; a.reconciledAs = r{"as"}.getStr
-    of "ack":
-      if a.state == asUnknownOutcome: a.state = asAckUnresolved
-    else: discard
-    byId[id] = a
-  # Per-writer sequence gaps = durable records lost.
-  for w, ns in seqs:
-    var sorted = ns
-    sorted.sort()
-    var expect = 1
-    for n in sorted:
-      if n > expect:
-        result.problems.add "writer " & w & ": records " & $expect & ".." & $(n - 1) & " missing"
-      expect = n + 1
-  for _, a in byId: result.actions.add a
-  result.health =
-    if result.problems.len > 0: jhCorrupt
-    elif result.tornLines.len > 0: jhTorn
-    else: jhOk
+  let fd = openForRead(path)
+  if fd < 0: return scanContent("", livenessFor(path))
+  defer: discard posix.close(fd)
+  if c_flock(fd, LOCK_SH) != 0:
+    raise newException(JournalError, "journal lock failed: " & $strerror(errno))
+  defer: discard c_flock(fd, LOCK_UN)
+  scanContent(readFd(fd), livenessFor(path))
+
+proc transact*(j: Journal; decide: proc(scan: JournalScan): JsonNode): JsonNode =
+  ## Scan and append under one exclusive lock: the state `decide` sees is the
+  ## state the appended record applies to. `decide` returns nil to append
+  ## nothing (or raises). Returns the appended record.
+  j.lockEx()
+  try:
+    let rfd = openForRead(j.path)   # same file; read through a new fd, no second flock
+    var content = ""
+    if rfd >= 0:
+      try: content = readFd(rfd)
+      finally: discard posix.close(rfd)
+    let rec = decide(scanContent(content, livenessFor(j.path)))
+    if rec != nil: j.appendUnlocked(rec)
+    rec
+  finally:
+    j.unlock()
 
 proc unknownOutcomes*(scan: JournalScan): seq[ActionSummary] =
   for a in scan.actions:

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.3 — Journal integrity
+
+Response to the 0.3.2 audit. All four findings were reproduced against 0.3.2
+before being fixed.
+
+| Finding | Reproduced on 0.3.2 | Resolution | Mutation |
+|---|---|---|---|
+| Records without `crc` accepted | yes: a forged outcome flipped UNKNOWN_OUTCOME → COMPLETED, health OK | `crc`, `w`, `n`, `ts` mandatory; full schema | caught (S1b) |
+| Duplicates/reorderings pass (sorted gap check) | yes: a replay passed; a reordering made an executed action read AUTHORIZED | `n` exactly last+1 in file order | survives: transitions catch every exact replay, gaps catch every reordering; kept for future relaxed transitions |
+| No transition validation | yes: outcome for a DENIED action; another run writing this run's outcome | per-action state machine; owner-only records | caught (S4–S6) |
+| `journal --reconcile` race | yes: 8 concurrent reconciles → 8 records, COMPLETED and FAILED | `Journal.transact`: scan + append under one exclusive lock | caught (S11; CLI: 1 of 6 wins) |
+
+Found while fixing:
+- **Operator writer IDs collided.** Every `journal` command wrote as
+  `operator-$USER` with `n` restarting at 1, so strict sequencing would have
+  reported CORRUPT after the second ack. Writer IDs are now unique per
+  handle.
+- **Strictness needed liveness.** Reconciling a still-running action, and
+  then receiving its real outcome, would have made the journal falsely
+  CORRUPT. Each run now holds a flock that the kernel releases on death.
+  "Started, no outcome" is IN_PROGRESS while the run lives, and acks or
+  reconciles of it are refused.
+
+Migration: none. 0.3.1 journals, and 0.3.2 journals with two operator
+commands, read as CORRUPT and must be moved aside. Both versions existed
+only on test machines.
+
+
 ## 0.3.2 — "Authority Boundary Hardening"
 
 Response to the independent audit of 0.3.1. Each finding was reproduced

@@ -1,7 +1,7 @@
 import std/[asyncdispatch, json, os, parseopt, strutils]
 import malyutka/[types, provider, core, session, events, config, sandbox, journal]
 
-const Version = "0.3.2"
+const Version = "0.3.3"
 
 proc usage() =
   echo """malyutka // 9M14 - Linux-native Nim agent harness (v""" & Version & """)
@@ -66,42 +66,56 @@ proc journalCmd() =
       of "as": asState = val.toUpperAscii.replace("-", "_")
       else: stderr.writeLine("error: unknown option --" & key); quit(2)
   let path = journalPath()
-  let scan = try: scanJournal(path)
-             except JournalError as e: (stderr.writeLine("error: " & e.msg); quit(5))
   let target = if ack.len > 0: ack else: reconcile
   if target.len > 0:
     if ack.len > 0 and reconcile.len > 0:
       stderr.writeLine("error: use either --ack or --reconcile"); quit(2)
     if reconcile.len > 0 and asState notin ["COMPLETED", "FAILED", "NOT_EXECUTED"]:
       stderr.writeLine("error: --reconcile needs --as:completed|failed|not-executed"); quit(2)
-    var current = ""
-    for a in scan.actions:
-      if a.action == target: current = $a.state
-    let allowed = if ack.len > 0: @[$asUnknownOutcome]
-                  else: @[$asUnknownOutcome, $asAckUnresolved]
-    if current notin allowed:
-      stderr.writeLine("error: " & target & " is " &
-        (if current.len > 0: current else: "not in the journal") &
-        "; expected " & allowed.join(" or ")); quit(2)
-    let j = openJournal(path, writer = "operator-" & getEnv("USER", "unknown"))
-    if ack.len > 0:
-      j.append(%*{"rec": "ack", "action": ack, "by": getEnv("USER", "operator")})
-      echo ack, " -> ACKNOWLEDGED_UNRESOLVED (outcome still unknown)"
-    else:
-      j.append(%*{"rec": "reconcile", "action": reconcile, "as": asState,
-                  "by": getEnv("USER", "operator")})
-      echo reconcile, " -> RECONCILED as ", asState
-    j.close()
+    let allowed = if ack.len > 0: {asUnknownOutcome} else: {asUnknownOutcome, asAckUnresolved}
+    var refusal = ""
+    try:
+      let j = openJournal(path, writer = "operator-" & getEnv("USER", "unknown"))
+      defer: j.close()
+      # Check and append under one exclusive lock: no other writer can change
+      # the action in between (0.3.2 scanned, released, then appended).
+      discard j.transact(proc(scan: JournalScan): JsonNode =
+        if scan.health == jhCorrupt:
+          refusal = "journal is CORRUPT; run `malyutka journal` first"; return nil
+        var current = ""
+        for a in scan.actions:
+          if a.action == target: current = $a.state
+        var ok = false
+        for st in allowed:
+          if current == $st: ok = true
+        if not ok:
+          refusal = target & " is " & (if current.len > 0: current else: "not in the journal") &
+            (if current == $asInProgress: " (its run is still alive)" else: "")
+          return nil
+        if ack.len > 0: %*{"rec": "ack", "action": ack, "by": getEnv("USER", "operator")}
+        else: %*{"rec": "reconcile", "action": reconcile, "as": asState,
+                 "by": getEnv("USER", "operator")})
+    except JournalError as e:
+      stderr.writeLine("error: " & e.msg); quit(5)
+    if refusal.len > 0:
+      stderr.writeLine("error: " & refusal); quit(2)
+    if ack.len > 0: echo ack, " -> ACKNOWLEDGED_UNRESOLVED (outcome still unknown)"
+    else: echo reconcile, " -> RECONCILED as ", asState
     quit(0)
+  let scan = try: scanJournal(path)
+             except JournalError as e: (stderr.writeLine("error: " & e.msg); quit(5))
   echo "journal: ", path
   echo "health:  ", $scan.health
   for p in scan.problems: echo "  CORRUPT: ", p
   if scan.tornLines.len > 0:
     echo "  torn line(s) ", scan.tornLines.join(", "),
          ": writes interrupted by a crash; the step each guarded never proceeded"
-  var unresolved: seq[ActionSummary]
+  var unresolved, running: seq[ActionSummary]
   for a in scan.actions:
     if a.state in {asUnknownOutcome, asAckUnresolved}: unresolved.add a
+    if a.state == asInProgress: running.add a
+  for a in running:
+    echo "  in progress (run alive): ", a.action, "  ", a.tool, " ", $a.args
   if unresolved.len == 0:
     echo "no actions with unknown outcome"
   else:
