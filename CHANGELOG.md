@@ -1,5 +1,16 @@
 # Changelog
 
+## M1.2 certified — 2026-10-07 (kernel v0.3.4, unchanged)
+
+`tests/m12-certify.sh` passed with full live coverage on `calisota`: Ubuntu
+22.04.5, kernel 6.8, Nim 2.2.12, bubblewrap 0.6.1, Ollama with
+`qwen3.5:27b`, unprivileged user. FAIL=0, NOT_RUN=0, GAP=0.
+- The certified kernel and certifier hashes match `v0.3.4` and `main`.
+- Scope, including what remains open (24.04 with the AppArmor restriction
+  active; vLLM; other models), is recorded in
+  `docs/certification/M1.2-calisota-20261007.md`.
+
+
 ## 0.3.4 certification tooling, revision 2 (kernel unchanged)
 
 Response to the review of the first certification tooling revision. Each fix

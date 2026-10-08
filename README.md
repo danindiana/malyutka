@@ -7,7 +7,7 @@
 [![Platform](https://img.shields.io/badge/platform-linux-informational?logo=linux&logoColor=white)](#requirements)
 [![Sandbox](https://img.shields.io/badge/sandbox-bubblewrap-3fb950)](#the-sandbox)
 [![Version](https://img.shields.io/github/v/tag/danindiana/malyutka?label=version&color=d29922)](CHANGELOG.md)
-[![Milestone](https://img.shields.io/badge/M1.2-certification%20pending-d29922)](#project-status)
+[![Milestone](https://img.shields.io/badge/M1.2-certified%20(Ubuntu%2022.04)-3fb950)](docs/certification/M1.2-calisota-20261007.md)
 
 **A small, Linux-native, model-neutral agent harness written in Nim, built so
 that a recoverable model mistake cannot become an unrecoverable systems
@@ -59,15 +59,17 @@ The name and the green/amber terminal themes are visual identity only (see
 ## Project status
 
 **v0.3.4: M1 (guidance loop) complete; M1.2 (integration certification)
-pending.**
+passed on a real host**, with one configuration still open: Ubuntu 24.04
+with its AppArmor restriction active (see the table).
 
 | Evidence | Status |
 |---|---|
 | Offline suites: 80 unit/invariant/adversarial + 17 CLI integration, as root and unprivileged | pass (Nim 1.6.14) |
 | Native Nim 2.x build and tests | pass on CI (Nim 2.2.x, ubuntu-24.04, unprivileged runner) |
 | Nim 2.2.4 semantic check (`nim check`) | 0 diagnostics in Malyutka sources |
-| Live Ollama / vLLM tool-call round trips on a real host | **pending**: `tests/m12-certify.sh` |
-| bubblewrap under Ubuntu 24.04's real AppArmor configuration | **pending**: `tests/m12-certify.sh` |
+| Live Ollama tool calling on a real host (qwen3.5:27b): single + multi-call, sandboxed shell, model-issued escape attempt, live SIGKILL + restart | **certified**: [record](docs/certification/M1.2-calisota-20261007.md) (Ubuntu 22.04, Nim 2.2.12, bwrap 0.6.1) |
+| vLLM | optional; not yet run live |
+| bubblewrap with Ubuntu 24.04's AppArmor userns restriction **active** | **untested**: the certification host and CI both run without it |
 
 Malyutka is early-stage research software. Its *defenses* are tested
 adversarially, and each test is checked by deliberately breaking the defense
@@ -418,7 +420,7 @@ CHANGELOG.md                every release, every audit finding
 | Milestone | Scope |
 |---|---|
 | **M1 / M1.1** ✓ | guidance loop, OpenAI-compatible providers, confined shell, journal |
-| **M1.2** | integration certification on a real host (in progress) |
+| **M1.2** ✓ | integration certification on a real host ([record](docs/certification/M1.2-calisota-20261007.md)); open: 24.04 + AppArmor restriction |
 | M2 | Linux capability layer: files, search, patch, bounded processes, ASK approvals |
 | M3 | isolation, deepened: per-capability scopes, cgroups, seccomp, credential broker |
 | M4 | ledger: resumable runs, content-addressed artifacts, replay |
