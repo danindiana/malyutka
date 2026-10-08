@@ -48,19 +48,23 @@ proc shellSpec(cfg: AgentConfig): ToolSpec =
          args["command"].kind != JString:
         return ToolResult(ok: false, output: "missing string argument: command", exitCode: 2)
       let cmd = args["command"].getStr
-      var argv: seq[string]
+      var r: tuple[output: string, exitCode: int, truncated, timedOut: bool]
       case realm
       of erSandbox:
         let exe = bwrapPath()
         if exe.len == 0:
           raise newException(ConfinementError, "sandbox requested but bwrap unavailable")
-        checkWorkspace(cfg.cwd)
-        argv = @[exe] & bwrapArgv(cfg.cwd, cmd)
+        # The workspace is opened and validated as an fd, and that fd is what
+        # bwrap binds: no second path resolution between check and mount.
+        let ws = openWorkspace(cfg.cwd)
+        defer: ws.close()
+        r = runBounded(@[exe] & bwrapArgv(ws.path, cmd), cfg.shellTimeoutSec,
+                       cfg.maxOutputBytes, ws.path, keepFd = ws.fd)
       of erHost:
-        argv = @["/bin/sh", "-c", cmd]
+        r = runBounded(@["/bin/sh", "-c", cmd], cfg.shellTimeoutSec,
+                       cfg.maxOutputBytes, cfg.cwd, hostTree = true)
       else:
         raise newException(ConfinementError, "unsupported realm for shell: " & $realm)
-      let r = runBounded(argv, cfg.shellTimeoutSec, cfg.maxOutputBytes, cfg.cwd)
       var output = r.output
       if r.truncated: output.add "\n[malyutka: output truncated at " & $cfg.maxOutputBytes & " bytes]"
       if r.timedOut: output.add "\n[malyutka: timed out after " & $cfg.shellTimeoutSec & "s]"

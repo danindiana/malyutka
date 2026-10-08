@@ -1,7 +1,7 @@
 ## One test per architectural invariant (see ARCHITECTURE.md). Test names
 ## start with the invariant number so a failure reads as a broken invariant.
 
-import std/[asyncdispatch, json, os, strutils, tables, unittest]
+import std/[asyncdispatch, json, os, posix, strutils, tables, unittest]
 import malyutka/[types, provider, core, policy, tools, events, sandbox, journal]
 
 # Private per-process scratch dir: never fixed names in shared /tmp.
@@ -15,12 +15,13 @@ proc cfgWith(allowShell = false; unconfined = false): AgentConfig =
   result.unconfinedHost = unconfined
 
 proc tmpJournal(name: string): Journal =
-  let path = testTmp / "malyutka-test-journals" / (name & ".jsonl")
+  let path = testTmp / "state" / (name & ".jsonl")
   removeFile(path)
   openJournal(path)
 
 proc recs(j: Journal): seq[string] =
-  for line in lines(j.path): result.add parseJson(line)["rec"].getStr
+  for line in lines(j.path):
+    if line.strip.len > 0: result.add parseJson(line)["rec"].getStr   # framing adds blank lines
 
 proc deniedProbe(): tuple[ok: bool, detail: string] = (false, "test: no sandbox")
 proc okProbe(): tuple[ok: bool, detail: string] = (true, "test")
@@ -141,7 +142,8 @@ suite "architectural invariants":
 suite "sandbox broker":
   test "tmpfs /tmp is mounted before the workspace bind":
     let argv = bwrapArgv("/tmp/ws", "true")
-    check argv.find("/tmp") < argv.find("--bind")
+    check argv.find("--bind-fd") > 0
+    check argv.find("/tmp") < argv.find("--bind-fd")
 
   test "network is unshared":
     check "--unshare-all" in bwrapArgv("/w", "true")
@@ -186,7 +188,8 @@ suite "write-ahead journal":
     # Host realm (waived) so these tests do not depend on bwrap; the journal
     # rules are realm-independent.
     result = cfgWith(allowShell = true, unconfined = true)
-    result.cwd = testTmp
+    result.cwd = testTmp / "ws"
+    createDir(result.cwd)
 
   test "J1 side-effecting action without a journal is denied, not executed":
     let marker = testTmp / "malyutka-j1"
@@ -262,3 +265,142 @@ suite "write-ahead journal":
     j.close()
 
 removeDir(testTmp)
+
+suite "journal integrity (0.3.2)":
+  proc linesOf(path: string): seq[string] =
+    for l in readFile(path).splitLines:
+      if l.strip.len > 0: result.add l
+
+  test "J8 a writer's torn fragment cannot swallow another writer's record":
+    # 0.3.1 lost B-2 here: B had the journal open before A crashed mid-write.
+    let b = tmpJournal("j8")
+    b.append(%*{"rec": "intent", "action": "B-1"})
+    let f = open(b.path, fmAppend); f.write("{\"rec\": \"started\", \"act"); f.close()
+    b.append(%*{"rec": "intent", "action": "B-2"})
+    let scan = scanJournal(b.path)
+    var ids: seq[string]
+    for a in scan.actions: ids.add a.action
+    check "B-2" in ids
+    check scan.health == jhTorn
+    b.close()
+
+  test "J9 eight concurrent writers: every record intact, no gaps":
+    let path = testTmp / "state" / "j9.jsonl"
+    removeFile(path)
+    var kids: seq[Pid]
+    for w in 0 ..< 8:
+      let pid = posix.fork()
+      if pid == 0:
+        let j = openJournal(path, writer = "w" & $w)
+        for i in 0 ..< 300:
+          j.append(%*{"rec": "intent", "action": "w" & $w & "-" & $i, "pad": repeat('x', 1500)})
+        quit(0)
+      kids.add pid
+    for k in kids:
+      var st: cint
+      discard posix.waitpid(k, st, 0)
+    let scan = scanJournal(path)
+    check scan.actions.len == 2400
+    check scan.health == jhOk
+
+  test "J10 an altered durable record is CORRUPT, and runs are refused":
+    var j = tmpJournal("j10")
+    for i in 0 ..< 3: j.append(%*{"rec": "intent", "action": "A-" & $i})
+    j.close()
+    var ls = linesOf(j.path)
+    ls[1] = ls[1].replace("A-1", "A-9")          # parseable, checksum now wrong
+    writeFile(j.path, ls.join("\n") & "\n")
+    check scanJournal(j.path).health == jhCorrupt
+    j = openJournal(j.path)
+    expect JournalError:
+      discard waitFor runAgent(newMockProvider(), "t", cfgWith(), journal = j)
+    j.close()
+
+  test "J11 a deleted durable record is CORRUPT (sequence gap)":
+    let j = tmpJournal("j11")
+    for i in 0 ..< 4: j.append(%*{"rec": "intent", "action": "G-" & $i})
+    j.close()
+    var ls = linesOf(j.path)
+    ls.delete(1)
+    writeFile(j.path, ls.join("\n") & "\n")
+    let scan = scanJournal(j.path)
+    check scan.health == jhCorrupt
+    check "missing" in scan.problems.join(" ")
+
+  test "J12 a torn tail alone is benign (TORN_TAIL), and runs proceed":
+    var j = tmpJournal("j12")
+    j.append(%*{"rec": "intent", "action": "T-1"})
+    j.close()
+    let f = open(j.path, fmAppend); f.write("{\"rec\": \"deci"); f.close()
+    check scanJournal(j.path).health == jhTorn
+    j = openJournal(j.path)
+    var kinds: seq[string]; var ps: seq[JsonNode]
+    discard waitFor runAgent(newMockProvider(), "t", cfgWith(), journal = j, sink = collect(kinds, ps))
+    check "journal.torn" in kinds
+    j.close()
+
+  test "J13 journal inside the workspace (or vice versa) is refused":
+    let ws = testTmp / "j13ws"
+    createDir(ws)
+    expect JournalError: checkJournalPlacement(ws / ".state", ws)
+    expect JournalError: checkJournalPlacement(testTmp, ws)          # workspace inside state dir
+    let link = testTmp / "j13link"                                   # symlink alias to workspace
+    removeFile(link); createSymlink(ws, link)
+    expect JournalError: checkJournalPlacement(link / "state", ws)
+    checkJournalPlacement(testTmp / "state", ws)                     # disjoint: fine
+    var c = cfgWith(); c.cwd = ws
+    let j = openJournal(ws / ".state" / "journal.jsonl")
+    expect JournalError:
+      discard waitFor runAgent(newMockProvider(), "t", c, journal = j)
+    j.close()
+
+  test "J14 a symlinked or foreign journal file is refused":
+    let target = testTmp / "state" / "real.jsonl"
+    writeFile(target, "")
+    let link = testTmp / "state" / "link.jsonl"
+    removeFile(link); createSymlink(target, link)
+    expect JournalError: discard openJournal(link)
+    if getuid() == 0:
+      let foreign = testTmp / "state" / "foreign.jsonl"
+      writeFile(foreign, "")
+      check posix.chown(cstring(foreign), 65534, 65534) == 0
+      expect JournalError: discard openJournal(foreign)
+
+  test "J15 reconcile records the established outcome; ack leaves it unresolved":
+    let j = tmpJournal("j15")
+    for id in ["R-1", "R-2"]:
+      j.append(%*{"rec": "intent", "action": id, "tool": "shell", "args": {}})
+      j.append(%*{"rec": "decision", "action": id, "verdict": "ALLOW"})
+      j.append(%*{"rec": "started", "action": id})
+    j.append(%*{"rec": "reconcile", "action": "R-1", "as": "FAILED"})
+    j.append(%*{"rec": "ack", "action": "R-2"})
+    var st = initTable[string, ActionSummary]()
+    for a in scanJournal(j.path).actions: st[a.action] = a
+    check st["R-1"].state == asReconciled
+    check st["R-1"].reconciledAs == "FAILED"
+    check st["R-2"].state == asAckUnresolved
+    check unknownOutcomes(j.path).len == 0
+    j.close()
+
+  test "J16 states: denied, authorized-but-never-started, failed are distinguished":
+    let j = tmpJournal("j16")
+    j.append(%*{"rec": "intent", "action": "D"})
+    j.append(%*{"rec": "decision", "action": "D", "verdict": "DENY"})
+    j.append(%*{"rec": "intent", "action": "A"})
+    j.append(%*{"rec": "decision", "action": "A", "verdict": "ALLOW"})
+    j.append(%*{"rec": "intent", "action": "F"})
+    j.append(%*{"rec": "decision", "action": "F", "verdict": "ALLOW"})
+    j.append(%*{"rec": "started", "action": "F"})
+    j.append(%*{"rec": "outcome", "action": "F", "state": "COMPLETED", "ok": false})
+    var st = initTable[string, ActionState]()
+    for a in scanJournal(j.path).actions: st[a.action] = a.state
+    check st["D"] == asDenied
+    check st["A"] == asAuthorized
+    check st["F"] == asFailed
+    j.close()
+
+  test "J17 records with non-ASCII arguments round-trip their checksum":
+    let j = tmpJournal("j17")
+    j.append(%*{"rec": "intent", "action": "U", "args": {"command": "echo 'Малютка ✓ \"q\" \\ \t'"}})
+    check scanJournal(j.path).health == jhOk
+    j.close()

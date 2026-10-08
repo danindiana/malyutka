@@ -1,7 +1,7 @@
 import std/[asyncdispatch, json, os, parseopt, strutils]
 import malyutka/[types, provider, core, session, events, config, sandbox, journal]
 
-const Version = "0.3.1"
+const Version = "0.3.2"
 
 proc usage() =
   echo """malyutka // 9M14 - Linux-native Nim agent harness (v""" & Version & """)
@@ -9,7 +9,10 @@ proc usage() =
 Usage:
   malyutka run [options] <task>
   malyutka doctor
-  malyutka journal [--ack:ACTION_ID]   List (or acknowledge) actions with unknown outcome
+  malyutka journal                     Journal health + actions with unknown outcome
+  malyutka journal --reconcile:ID --as:completed|failed|not-executed
+                                       Record the outcome you established for an action
+  malyutka journal --ack:ID            Mark it seen, outcome still unknown
 
 Options:
   --provider:mock|openai|ollama|vllm   Provider adapter (all but mock are OpenAI-compatible)
@@ -31,7 +34,8 @@ Environment:
   MALYUTKA_STATE_DIR   journal + sessions (default ~/.local/state/malyutka)
 
 Exit codes: 0 answered, 1 failure, 2 usage, 3 confinement unavailable, 4 halted,
-            5 journal unavailable / unknown outcomes pending (journal command)
+            5 journal unavailable, misplaced, or unknown outcomes pending,
+            6 journal corrupt (journal command)
 """
 
 proc makeProvider(cfg: AgentConfig): Provider =
@@ -53,33 +57,65 @@ proc stateDir(): string =
 proc journalPath(): string = stateDir() / "journal.jsonl"
 
 proc journalCmd() =
-  var ack = ""
+  var ack, reconcile, asState = ""
   for kind, key, val in getopt(commandLineParams()[1 .. ^1]):
-    if kind == cmdLongOption and key == "ack": ack = val
+    if kind == cmdLongOption:
+      case key
+      of "ack": ack = val
+      of "reconcile": reconcile = val
+      of "as": asState = val.toUpperAscii.replace("-", "_")
+      else: stderr.writeLine("error: unknown option --" & key); quit(2)
   let path = journalPath()
-  if ack.len > 0:
-    let pending = unknownOutcomes(path)
-    var found = false
-    for a in pending:
-      if a.action == ack: found = true
-    if not found:
-      stderr.writeLine("error: no UNKNOWN_OUTCOME action " & ack); quit(2)
-    let j = openJournal(path)
-    j.append(%*{"rec": "ack", "action": ack, "by": getEnv("USER", "operator")})
+  let scan = try: scanJournal(path)
+             except JournalError as e: (stderr.writeLine("error: " & e.msg); quit(5))
+  let target = if ack.len > 0: ack else: reconcile
+  if target.len > 0:
+    if ack.len > 0 and reconcile.len > 0:
+      stderr.writeLine("error: use either --ack or --reconcile"); quit(2)
+    if reconcile.len > 0 and asState notin ["COMPLETED", "FAILED", "NOT_EXECUTED"]:
+      stderr.writeLine("error: --reconcile needs --as:completed|failed|not-executed"); quit(2)
+    var current = ""
+    for a in scan.actions:
+      if a.action == target: current = $a.state
+    let allowed = if ack.len > 0: @[$asUnknownOutcome]
+                  else: @[$asUnknownOutcome, $asAckUnresolved]
+    if current notin allowed:
+      stderr.writeLine("error: " & target & " is " &
+        (if current.len > 0: current else: "not in the journal") &
+        "; expected " & allowed.join(" or ")); quit(2)
+    let j = openJournal(path, writer = "operator-" & getEnv("USER", "unknown"))
+    if ack.len > 0:
+      j.append(%*{"rec": "ack", "action": ack, "by": getEnv("USER", "operator")})
+      echo ack, " -> ACKNOWLEDGED_UNRESOLVED (outcome still unknown)"
+    else:
+      j.append(%*{"rec": "reconcile", "action": reconcile, "as": asState,
+                  "by": getEnv("USER", "operator")})
+      echo reconcile, " -> RECONCILED as ", asState
     j.close()
-    echo "acknowledged ", ack
-    quit(0)
-  let pending = unknownOutcomes(path)
-  if pending.len == 0:
-    echo "journal: ", path, " - no actions with unknown outcome"
     quit(0)
   echo "journal: ", path
-  echo pending.len, " action(s) started but never recorded an outcome."
-  echo "They may or may not have taken effect. Malyutka will not re-run them."
-  for a in pending:
-    echo "  ", a.action, "  ", a.startedAt, "  ", a.tool, " ", $a.args
-  echo "Inspect the workspace, then: malyutka journal --ack:<ACTION_ID>"
-  quit(5)
+  echo "health:  ", $scan.health
+  for p in scan.problems: echo "  CORRUPT: ", p
+  if scan.tornLines.len > 0:
+    echo "  torn line(s) ", scan.tornLines.join(", "),
+         ": writes interrupted by a crash; the step each guarded never proceeded"
+  var unresolved: seq[ActionSummary]
+  for a in scan.actions:
+    if a.state in {asUnknownOutcome, asAckUnresolved}: unresolved.add a
+  if unresolved.len == 0:
+    echo "no actions with unknown outcome"
+  else:
+    echo unresolved.len, " action(s) with unknown outcome. They may or may not have taken"
+    echo "effect, and Malyutka will not re-run them:"
+    for a in unresolved:
+      echo "  ", a.action, "  ", $a.state, "  ", a.startedAt, "  ", a.tool, " ", $a.args
+    echo "Inspect, then: malyutka journal --reconcile:<ID> --as:completed|failed|not-executed"
+    echo "          or: malyutka journal --ack:<ID>   (seen; outcome stays unknown)"
+  if scan.health == jhCorrupt: quit(6)
+  var pending = false
+  for a in unresolved:
+    if a.state == asUnknownOutcome: pending = true
+  quit(if pending: 5 else: 0)
 
 proc doctor() =
   echo "malyutka: ", Version
@@ -147,17 +183,24 @@ proc main() =
   if not cfg.jsonEvents: banner(cfg.theme, cfg.providerName, cfg.model, shellMode)
   let sink: EventSink = if cfg.jsonEvents: jsonlSink else: consoleSink(cfg.theme)
   try:
+    let runId = newRunId()
     var j: Journal
-    try: j = openJournal(journalPath())
+    try:
+      # State dir (journal + sessions) must be disjoint from the workspace.
+      checkJournalPlacement(stateDir(), cfg.cwd)
+      j = openJournal(journalPath(), writer = runId)
     except JournalError as e:
       stderr.writeLine("malyutka: journal unavailable, refusing to run: " & e.msg); quit(5)
     defer: j.close()
-    let res = waitFor runAgent(makeProvider(cfg), task, cfg, sink = sink, journal = j)
+    let res = waitFor runAgent(makeProvider(cfg), task, cfg, sink = sink, runId = runId, journal = j)
     # Outside the workspace, like the journal: the sandboxed agent cannot edit it.
     saveSession(stateDir() / "sessions" / (res.runId & ".json"), res.runId, res.messages)
     if cfg.jsonEvents: stderr.writeLine("FINAL: " & res.answer)
     else: stderr.writeLine("\n" & res.answer)
     if res.halt != hrFinal: quit(4)
+  except JournalError as e:
+    stderr.writeLine("malyutka: journal refused the run: " & headline(e.msg))
+    quit(5)
   except ConfinementError as e:
     stderr.writeLine("malyutka: confinement unavailable, refusing to run: " & headline(e.msg))
     stderr.writeLine("  fix: apt install bubblewrap, check `malyutka doctor`, or pass --unconfined-host")

@@ -2,7 +2,7 @@
 ## capability exists; the policy kernel decides whether it may run; the
 ## sandbox broker decides where. No path executes a call that was not ALLOWed.
 
-import std/[asyncdispatch, json, oids, tables, times]
+import std/[asyncdispatch, json, os, strutils, sysrand, tables, times]
 import ./[types, provider, tools, policy, events, sandbox, journal]
 
 type
@@ -48,7 +48,12 @@ proc validateTranscript*(messages: seq[Message]): string =
   if pending.len > 0: return "end of transcript: unanswered calls " & $pending
   ""
 
-proc newRunId*(): string = "9M14-" & ($genOid())[^8 .. ^1]
+proc newRunId*(): string =
+  ## 32 random bits from the OS CSPRNG (std/oids pulled in std/random, whose
+  ## compile-time init the Nim 2.2.4 wasm checker cannot evaluate).
+  var hex = ""
+  for b in urandom(4): hex.add toHex(BiggestInt(b), 2).toLowerAscii
+  "9M14-" & hex
 
 proc defaultProbe(): tuple[ok: bool, detail: string] = probeBwrap()
 
@@ -68,7 +73,7 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
   # working sandbox aborts the run (invariants 5, 6).
   for n, spec in registry:
     if spec.capability.realm == erSandbox:
-      try: checkWorkspace(cfg.cwd)
+      try: openWorkspace(cfg.cwd).close()
       except ConfinementError as e:
         discard em.emit("confinement.failed", %*{"tool": n, "reason": e.msg})
         raise
@@ -80,10 +85,19 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
     elif spec.capability.realm == erHost:
       discard em.emit("confinement.waived", %*{"tool": n, "ceiling": $spec.capability.maxEffect})
 
-  # Report actions a previous run started but never recorded the outcome of.
-  # They are surfaced, never re-executed.
+  # Journal preconditions (fail closed): disjoint from the workspace, and no
+  # corruption. Actions a previous run started but never recorded the outcome
+  # of are surfaced, never re-executed.
   if journal != nil:
-    for a in unknownOutcomes(journal.path):
+    checkJournalPlacement(parentDir(journal.path), cfg.cwd)
+    let scan = scanJournal(journal.path)
+    if scan.health == jhCorrupt:
+      discard em.emit("journal.corrupt", %*{"problems": scan.problems})
+      raise newException(JournalError, "journal is corrupt (" & scan.problems.join("; ") &
+        "); inspect it with `malyutka journal` before running again")
+    if scan.tornLines.len > 0:
+      discard em.emit("journal.torn", %*{"lines": scan.tornLines})
+    for a in unknownOutcomes(scan):
       discard em.emit("journal.unknown_outcome", %*{"action": a.action, "run": a.run,
         "tool": a.tool, "args": a.args, "startedAt": a.startedAt})
 

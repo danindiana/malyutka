@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.2 — "Authority Boundary Hardening"
+
+Response to the independent audit of 0.3.1. Each finding was reproduced
+before it was fixed, and each fix was mutation-checked.
+
+| Audit finding | Reproduced? | Resolution |
+|---|---|---|
+| P0 state dir can sit inside the workspace | yes, by construction | kernel and CLI refuse overlapping canonical paths (incl. symlink aliases); journal opened `O_NOFOLLOW`, must be a regular file owned by the operator |
+| P0 concurrent writers uncoordinated | **partly**: concurrent appends never interleaved (8 writers x 500 records, 0 damaged; `O_APPEND` is atomic on Linux), but a torn fragment from one crashed writer **swallowed the next record of a writer that already had the file open** | framing (`\n` + record + `\n`); per-writer sequence numbers + CRC-32; corrupt-vs-torn classification, corrupt fails closed; flock as defense in depth (its mutant survives, documented) |
+| P1 lexical workspace validation | **latent**: CLI safe (getcwd returns physical paths), library API accepted a symlink to `$HOME` | realpath + validate the opened fd; bind with `--bind-fd`, so no second resolution (swap-after-check test) |
+| P1 unchecked journal repair writes | yes | repair removed entirely; framing makes it unnecessary |
+| P1 host-realm process tree | yes | host child leads its own process group with PDEATHSIG; whole group killed on exit/timeout. Deliberate re-parenting (`setsid`) still escapes: cgroup in M3; documented as high risk |
+| P2 `requires nim >= 2.0` vs tests on 1.6.14 | yes | `requires nim >= 1.6.14`; compiler matrix documented; Nim 2.2.4 semantic check: 0 diagnostics in Malyutka sources |
+| State machine: ack is not reconciliation | — | PREPARED / DENIED / AUTHORIZED / UNKNOWN_OUTCOME / COMPLETED / FAILED / NOT_EXECUTED / RECONCILED / ACKNOWLEDGED_UNRESOLVED; `journal --reconcile:ID --as:…` |
+
+Also found while testing: my own invariant tests had placed the journal
+inside the workspace. The new placement check caught it.
+
+
 ## 0.3.1 — M1.1.1 "Confined, honestly"
 
 Response to the M1.1 review. Every fix below came with a test, and each test

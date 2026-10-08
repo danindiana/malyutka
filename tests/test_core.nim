@@ -1,4 +1,4 @@
-import std/[asyncdispatch, json, random, strutils, unittest]
+import std/[asyncdispatch, json, strutils, unittest]
 import malyutka/[types, provider, core, config, tools, events]
 
 proc cfgWith(allowShell = false): AgentConfig =
@@ -56,6 +56,19 @@ suite "configuration":
     for s in schemas: check s["function"]["name"].getStr != "shell"
     check wireSchemas(toolsFor(cfgWith(true))).len == 2
 
+# Deterministic xorshift64* PRNG for the fuzzer. Not std/random: its
+# compile-time initialization cannot be evaluated by the Nim 2.2.4 wasm checker
+# used for 2.x certification, and a fuzzer needs nothing more than this.
+type Rng = object
+  s: uint64
+proc next(r: var Rng): uint64 =
+  r.s = r.s xor (r.s shr 12); r.s = r.s xor (r.s shl 25); r.s = r.s xor (r.s shr 27)
+  r.s * 0x2545F4914F6CDD1D'u64
+proc rand(r: var Rng; s: HSlice[int, int]): int =
+  s.a + int(r.next mod uint64(s.b - s.a + 1))
+proc chance(r: var Rng; p: float): bool = float(r.next shr 11) / float(1'u64 shl 53) < p
+proc sample[T](r: var Rng; xs: openArray[T]): T = xs[r.rand(0 .. xs.high)]
+
 suite "tool protocol completeness":
   test "repetition halt mid-turn answers every call in the turn":
     var c = cfgWith(); c.repeatLimit = 2
@@ -91,12 +104,12 @@ suite "tool protocol completeness":
     check validateTranscript(@[a, Message(role: rTool, toolCallId: "x")]) == ""
 
   test "protocol fuzz: 2000 random scripts keep the transcript valid":
-    var rng = initRand(0x9_14)
+    var rng = Rng(s: 0x9_14)
     let names = ["echo", "echo", "shell", "nope", ""]
     for trial in 0 ..< 2000:
       var script: seq[ModelAction]
       for t in 0 ..< rng.rand(0 .. 7):
-        if rng.rand(1.0) < 0.15:
+        if rng.chance(0.15):
           script.add ModelAction(kind: makFinal, text: "f")
           continue
         var calls: seq[ToolCall]

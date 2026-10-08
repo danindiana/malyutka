@@ -50,11 +50,15 @@ nimble build
 nimble test
 ```
 
-**Compile status:** 0.3.1 builds warning-free on **Nim 1.6.14** with
-bubblewrap 0.9.0 and passes 59 tests (48 unit/adversarial + 11 CLI
-integration) both as root and as an **unprivileged user**. It has **not yet
-been run on Nim 2.x**, nor on a host with Ubuntu 24.04's AppArmor
-user-namespace restriction (the test VM lacks it). Do not use `apt install nim` on Ubuntu 24.04 (it is
+**Compile status (0.3.2):**
+- **Nim 1.6.14:** builds warning-free with bubblewrap 0.9.0 and passes 77
+  tests (62 unit/invariant/adversarial + 15 CLI integration), both as root
+  and as an **unprivileged user**.
+- **Nim 2.2.4:** passes a semantic `nim check --os:linux` with zero
+  diagnostics in Malyutka's sources, using the official compiler built to
+  wasm. 2.x code generation and test runs are not yet verified.
+- **Not yet verified:** a host with Ubuntu 24.04's AppArmor user-namespace
+  restriction (the test VM lacks it). Do not use `apt install nim` on Ubuntu 24.04 (it is
 1.6.14); use choosenim:
 
 ```sh
@@ -97,8 +101,9 @@ Running on the host requires an explicit, logged waiver:
 ```
 
 Exit codes: 0 answered, 1 failure, 2 usage, 3 confinement unavailable,
-4 halted (maxSteps or repetition), 5 journal unavailable / unknown outcomes
-pending.
+4 halted (maxSteps or repetition), 5 journal unavailable, misplaced or
+corrupt (run) / unknown outcomes pending (`journal`), 6 journal corrupt
+(`journal`).
 
 ## Journal
 
@@ -107,9 +112,14 @@ started → outcome in `~/.local/state/malyutka/journal.jsonl`, outside any
 workspace and invisible to the sandbox. If Malyutka dies mid-action:
 
 ```sh
-./malyutka journal                 # lists UNKNOWN_OUTCOME actions (exit 5)
-./malyutka journal --ack:9M14-…    # after inspecting the workspace
+./malyutka journal                                   # health + unknown outcomes (exit 5; 6 if corrupt)
+./malyutka journal --reconcile:9M14-… --as:failed    # you established what happened
+./malyutka journal --ack:9M14-…                      # seen; outcome stays unknown
 ```
+
+The state directory (`MALYUTKA_STATE_DIR`) must not overlap the workspace.
+Records carry per-writer sequence numbers and checksums, so a tampered or
+truncated-in-the-middle journal is reported CORRUPT and runs are refused.
 
 Interrupted actions are surfaced on every run until acknowledged. They are
 never re-executed.
@@ -182,7 +192,7 @@ Machine consumers should bypass presentation entirely:
 Acceptance: every suite passes, with no unexpected host writes, no
 credential exposure, and no silently unconfined execution.
 
-- Nim 2.x compile + full suite.
+- Nim 2.x native compile + full suite (2.2.4 semantic check already passes).
 - Live Ollama and vLLM round trips.
 - Non-root on stock Ubuntu 24.04 with the AppArmor userns restriction.
 - Already done in 0.3.1: protocol fuzzing, containment and escape

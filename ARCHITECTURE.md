@@ -21,9 +21,10 @@ model ──proposes──► ToolCall (data, never authority)
               ┌────────▼────────┐  decision + "started" durable, or DENY
               │     JOURNAL     │
               └────────┬────────┘
-              ┌────────▼────────┐  realm sandbox → bwrap, or refuse
-              │ SANDBOX BROKER  │  realm host    → only with explicit waiver
-              └────────┬────────┘  clean fds, /dev/null stdin, scrubbed env,
+              ┌────────▼────────┐  realm sandbox → bwrap (workspace bound by fd),
+              │ SANDBOX BROKER  │                 or refuse
+              └────────┬────────┘  realm host → only with explicit waiver
+                       │           clean fds, /dev/null stdin, scrubbed env,
                        │           timeout, output cap, dies with harness
                   Observation ──► outcome journaled ──► tool message
                        │                                (answers its call id)
@@ -78,12 +79,12 @@ could violate it; the column names the milestone that must enforce it.
 | 4 | Plugins cannot modify the policy kernel at runtime | vacuous (no plugins); layers fixed per run | — |
 | 5 | Requested confinement failing means execution fails | enforced | I5, integration 6–7 |
 | 6 | Sandbox failure never silently becomes host execution | enforced | I6, I6b, I6c |
-| 7 | Every side effect receives an immutable event ID | enforced for side effects: write-ahead journal outside the agent's reach; append-only by construction, not cryptographically sealed | I7, J2–J6 |
+| 7 | Every side effect receives an immutable event ID | enforced for side effects: write-ahead journal outside the agent's reach (placement checked on canonical paths). Tampering is *detected* (CRC, sequence gaps) and fails closed; this is not cryptographic sealing against an attacker with the operator's uid | I7, J2–J17, integration 5c–5d |
 | 8 | Every authorization decision records the policy responsible | enforced | I8 |
 | 9 | Credentials are capabilities, not environment decoration | partial: scrubbed env, no inherited fds, operator home invisible to the sandbox; no credential broker yet | I9, adversarial |
 | 10 | Context loss/degradation is observable | partial: output truncation, timeouts and unjournaled outcomes are flagged; compaction is M5 | J5, sandbox tests |
 | 11 | Repeated unsuccessful cognition eventually halts | partial: identical-call halt + `maxSteps`; similarity-based R_t is M7 | I11 |
-| 12 | Recovery claims never exceed what was journaled | enforced in its present form: an action with `started` and no `outcome` is reported UNKNOWN_OUTCOME and never re-executed; there is no undo | J6, integration 3–5 |
+| 12 | Recovery claims never exceed what was journaled | enforced in its present form: an action with `started` and no `outcome` is UNKNOWN_OUTCOME and never re-executed. Acknowledging it does not mark it resolved; only an explicit `reconcile` does. There is no undo | J6, J15, J16, integration 3–5b |
 | P | Every proposed tool call receives exactly one terminal result | enforced | completeness tests, protocol fuzz (2000 scripts) |
 
 Invariant **P** is new in 0.3.1. M1.1 violated it: a repetition halt in the
@@ -103,63 +104,119 @@ until that row says **enforced**.
 `/run` (docker.sock, D-Bus, systemd and ssh-agent sockets), `/var`, `/mnt`,
 `/media`, `/srv`, `/sys`.
 
+- **The workspace is bound from a file descriptor, not a path (0.3.2).**
+  `openWorkspace` resolves the path with realpath(3), opens it
+  `O_PATH|O_DIRECTORY|O_NOFOLLOW`, then validates what the fd actually refers
+  to (via `/proc/self/fd`). That fd becomes fd 3 in the child, and bwrap binds
+  it with `--bind-fd 3`. No path is resolved twice, so a symlink swapped in
+  after the check cannot redirect the mount.
+  - 0.3.1 checked the path lexically: a symlink to `$HOME` passed the check.
+    The CLI was not exposed, because getcwd(3) returns physical paths, but
+    the library API was.
 - **Mount order matters:** `--tmpfs /tmp` precedes the workspace bind, or a
   workspace under `/tmp` is silently hidden.
-- **Workspace guard:** the workspace must not be `/`, `$HOME`, an ancestor of
-  `$HOME`, or overlap a system directory, `/run`, `/proc`, `/sys`, `/dev`.
-- **Namespaces:** `--unshare-all` (user, net, pid, ipc, uts, cgroup),
-  `--new-session` (blocks TIOCSTI injection into the operator's terminal).
+- **Workspace guard (on canonical paths):** the workspace must not be `/`,
+  `$HOME`, an ancestor of `$HOME`, or overlap a system directory, `/run`,
+  `/proc`, `/sys`, `/dev`.
+- **Namespaces:** `--unshare-all` (user, net, pid, ipc, uts, cgroup), plus
+  `--new-session`, which blocks TIOCSTI injection into the operator's
+  terminal.
 - **Process hygiene:** spawned with fork/execve, not `osproc.startProcess`.
-  Between fork and exec the child gets `/dev/null` stdin, one pipe for
-  stdout+stderr, and `close_range(3, ~0)` (with a close-loop fallback). No
-  harness fd crosses into the sandbox; an inherited fd would bypass the mount
-  namespace entirely.
+  Between fork and exec the child gets `/dev/null` stdin and one pipe for
+  stdout+stderr. Every other fd is closed with `close_range` (with a
+  close-loop fallback), except the workspace fd, which bwrap consumes. An
+  inherited fd would bypass the mount namespace entirely.
 - **Lifetime:** bwrap is a *direct* child of the harness, so
-  `--die-with-parent` ties the sandbox to Malyutka itself. M1.1 interposed
-  coreutils `timeout`, which made `--die-with-parent` refer to `timeout`; a
-  SIGKILLed harness left the command running and writing. The timeout is now
-  enforced in-process with poll(2), and on expiry bwrap is SIGKILLed, which
-  tears down the PID namespace including `setsid`-detached children.
-- **Probe:** functional, using the exact production argv, before the model's
-  first turn. If bwrap is missing, or present but blocked (e.g. Ubuntu 24.04's
-  AppArmor userns restriction), the run is refused (exit 3).
-- **Residual risks, documented not solved:**
-  - A hard link the *operator* placed in the workspace to a file outside it is
-    writable through. The agent cannot create such links: cross-mount `link()`
-    fails with EXDEV.
-  - Secrets *inside* the workspace (`.env`, tokens) are readable by the agent
-    and therefore visible to the provider.
-  - `/etc` is readable.
-  - The host realm (`--unconfined-host`) gets fd hygiene and the scrubbed
-    env, but no process-tree kill: detached host children can outlive a
-    timeout. That is part of what the waiver waives.
+  `--die-with-parent` ties the sandbox to Malyutka itself. The timeout is
+  enforced in-process with poll(2). On expiry bwrap is SIGKILLed, which tears
+  down the PID namespace, including `setsid`-detached children.
+- **Probe:** functional, using the exact production argv including
+  `--bind-fd`, run before the model's first turn. A missing bwrap, or one
+  present but blocked (e.g. Ubuntu 24.04's AppArmor userns restriction),
+  refuses the run (exit 3).
+
+### Host realm (`--unconfined-host`): explicitly high risk
+
+The waiver runs commands with the operator's full authority. Since 0.3.2 the
+host child leads its own session and process group and has
+`PR_SET_PDEATHSIG=SIGKILL`. When the command exits or times out, the whole
+group is SIGKILLed, so ordinary background jobs (`cmd &`) cannot outlive it.
+What still escapes:
+- a process that deliberately leaves the group (`setsid`, double fork,
+  `nohup … &` under `setsid`);
+- children of the group when the harness itself is SIGKILLed (only the
+  direct child receives PDEATHSIG).
+
+Closing those needs a cgroup (M3). Until then the waiver means what it says.
+
+### Residual risks, documented not solved
+
+- A hard link the *operator* placed in the workspace to a file outside it is
+  writable through. The agent cannot create one: cross-mount `link()` fails
+  with EXDEV.
+- Secrets *inside* the workspace (`.env`, tokens) are readable by the agent
+  and therefore visible to the provider.
+- `/etc` is readable.
 
 ## Write-ahead journal
 
-`$MALYUTKA_STATE_DIR/journal.jsonl` (default `~/.local/state/malyutka/`).
-Sessions go to `…/sessions/<run>.json`. Both live outside every workspace, and
-the sandbox cannot see `/home` at all, so the agent cannot edit its own
-record.
+**Location.** `$MALYUTKA_STATE_DIR/journal.jsonl` (default
+`~/.local/state/malyutka/`); sessions go to `…/sessions/<run>.json`.
 
-For each action with effect > B0:
+**Containment (0.3.2).** The state directory's *canonical* path must be
+disjoint from the workspace. A journal inside the workspace, or reachable
+through a symlink alias, refuses the run (exit 5). This is checked in the
+kernel, not just the CLI.
+- The journal file is opened `O_NOFOLLOW` and must be a regular file owned
+  by the operator.
+- 0.3.1 accepted `MALYUTKA_STATE_DIR` inside the workspace, letting the
+  sandboxed agent rewrite its own record.
+
+**Protocol.** For each action with effect > B0:
 
 ```
 intent ─fdatasync─► decision ─fdatasync─► started ─fdatasync─► EXECUTE ─► outcome ─fdatasync─►
 ```
 
-| Crash or failure point | Journal state | Meaning | Action taken |
-|---|---|---|---|
-| intent not durable | none | — | DENY, never runs |
-| decision/started not durable | NOT_STARTED | never executed | DENY, never runs |
-| after `started`, before `outcome` | UNKNOWN_OUTCOME | may or may not have happened | reported on every run and by `malyutka journal` (exit 5); never re-executed |
-| outcome not durable | UNKNOWN_OUTCOME | ran; result unrecorded | `journal.degraded` event + note to the model |
-| torn final line | ignored; repaired on next open | that step never became durable | — |
+**Integrity (0.3.2).**
+- **Framing.** Every record is written as `"\n" & json & "\n"`, so a
+  fragment torn by any crashed writer is terminated by the next writer's
+  leading newline.
+  - 0.3.1 instead repaired a torn tail at open time. That missed writers
+    that already had the file open: demonstrated, and the record appended
+    after the fragment was lost. If that record had been a `started`, an
+    action that ran would have read as never started.
+  - The repair code, with its unchecked writes, is gone.
+- **Writer identity.** Each record carries its writer `w` (the run ID), a
+  per-writer sequence number `n`, and a CRC-32 over the rest of the record.
+- **Locking.** flock `LOCK_EX` around appends and `LOCK_SH` around scans.
+  This is defense in depth: on a local Linux filesystem `O_APPEND` writes are
+  already atomic, which is why the flock mutant survives the 8-writer stress
+  test. It matters where append atomicity does not hold (e.g. NFS) and for
+  scan consistency.
 
-The operator inspects the workspace and clears an entry with
-`malyutka journal --ack:<ACTION_ID>`, which appends an `ack` record (it never
-rewrites history).
+**Health of a scan.**
 
-B0 actions are not journaled; they have nothing to recover.
+| Health | Meaning | Effect |
+|---|---|---|
+| OK | — | — |
+| TORN_TAIL | unparseable line(s): writes interrupted by a crash; the step each guarded never proceeded | `journal.torn` event; run proceeds |
+| CORRUPT | a parseable record with a bad CRC, or a gap in a writer's sequence: durable history altered or lost | run refused (exit 5); `malyutka journal` exits 6 |
+
+**Action states.**
+
+| State | Meaning |
+|---|---|
+| PREPARED | intent only; never authorized |
+| DENIED | authorization refused |
+| AUTHORIZED | allowed, but `started` never became durable: never ran |
+| UNKNOWN_OUTCOME | started, no outcome: may or may not have happened; surfaced every run; never re-executed |
+| COMPLETED / FAILED | ran; outcome recorded |
+| NOT_EXECUTED | started, but confinement refused execution |
+| RECONCILED | operator established the real outcome: `journal --reconcile:ID --as:completed\|failed\|not-executed` |
+| ACKNOWLEDGED_UNRESOLVED | operator saw it, outcome still unknown: `journal --ack:ID`. This does **not** imply reconciliation. |
+
+Operator records are appended; history is never rewritten.
 
 ## Wire protocol (OpenAI-compatible)
 
@@ -178,7 +235,7 @@ calls too. Strict servers (vLLM, OpenAI) reject anything else with HTTP 400.
 ## Events
 
 `run.start`, `confinement.waived`, `confinement.failed`,
-`journal.unknown_outcome`, `journal.degraded`, `step.start`, `tool.proposed`,
+`journal.unknown_outcome`, `journal.degraded`, `journal.torn`, `journal.corrupt`, `step.start`, `tool.proposed`,
 `policy.decision`, `tool.cancelled`, `tool.result`, `agent.final`,
 `agent.halt`.
 
@@ -190,17 +247,38 @@ replay/metrics contract.
 
 ## Testing discipline
 
-Each security test was mutation-checked: the protection was removed and the
-test confirmed to fail. This found one vacuous test (the fd test passed
-because `cat` blocked on stdin before reading the leaked fd). Process checks
-must not match their own command line: `pgrep -f` matching the shell running
-it, or the fake server's argv, produced three false results in development.
+**Mutation checks.** Each security test was checked by removing the
+protection and confirming the test fails.
+- This found a vacuous test in 0.3.1: the fd test passed because `cat`
+  blocked on stdin before it reached the leaked fd.
+- In 0.3.2 every new defense is caught by its mutant: realpath, `--bind-fd`,
+  host process group, framing, CRC, sequence gaps, kernel placement check,
+  `O_NOFOLLOW`.
+- The flock mutant survives (see above). That is reported, not hidden.
 
-Suites:
+**Self-matching process checks.** Process checks must not match their own
+command line: `pgrep -f` matching the shell running it, or the fake server's
+argv, produced three false results in development.
+
+**Suites.**
 - `tests/test_core.nim`
 - `tests/test_invariants.nim`
 - `tests/test_adversarial.nim`
-- `tests/integration.sh BIN` (CLI, strict provider, SIGKILL crash, journal)
+- `tests/integration.sh BIN` (CLI, strict provider, SIGKILL crash,
+  journal placement and tampering)
+
+**Compiler matrix.**
+
+| Nim | How | Result |
+|---|---|---|
+| 1.6.14 (native, Ubuntu apt) | full build + all suites, root and unprivileged | 62 unit + 15 integration pass |
+| 2.2.4 (official compiler built to wasm, `@live-codes/nim-wasm` 0.4.0) | `nim check --os:linux --cpu:amd64` on the CLI and all three test files, run offline in bwrap | 0 diagnostics in Malyutka sources |
+
+The 2.2.4 check stops at semantic analysis: no 2.x code generation, linking
+or test execution yet. Its only errors come from that wasm build's inability
+to evaluate `random.nim`'s compile-time `sqrt`, which is reached via
+`std/httpclient`. A two-line program importing just `std/httpclient`
+reproduces them exactly.
 
 ## Implementation notes
 
@@ -211,3 +289,9 @@ Suites:
 - **Tests:** they use a per-process scratch directory, never fixed names in a
   shared `/tmp`. Fixed names break when root and non-root runs share a
   machine.
+- **No `std/oids` or `std/random`:** both pull in compile-time evaluation the
+  2.2.4 wasm checker cannot do. Run IDs come from `std/sysrand`; the fuzzer
+  uses a 6-line xorshift.
+- **Open flags from C headers:** `O_PATH`, `O_DIRECTORY` and `O_NOFOLLOW` are
+  imported from `<fcntl.h>`. Their values differ between x86_64 and aarch64,
+  and Nim 1.6's `posix` lacks them.

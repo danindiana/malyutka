@@ -89,8 +89,35 @@ else:
 
     test "workspace must not be or contain $HOME, /, or a system dir":
       for bad in [getHomeDir(), "/", "/etc", "/usr/local", "/run/x", parentDir(getHomeDir())]:
-        expect ConfinementError: checkWorkspace(bad)
-      checkWorkspace(ws)   # fine
+        expect ConfinementError: discard checkWorkspace(bad)
+      check checkWorkspace(ws) == expandFilename(ws)   # fine
+
+    test "a symlinked workspace path is judged by what it resolves to":
+      # 0.3.1 checked the path lexically: a link to $HOME passed (audit P1).
+      for (name, target) in [("to-home", getHomeDir()), ("to-etc", "/etc"), ("to-root", "/")]:
+        let link = testTmp / name
+        removeFile(link)
+        createSymlink(target, link)
+        expect ConfinementError: discard checkWorkspace(link)
+        expect ConfinementError: discard openWorkspace(link)
+        removeFile(link)
+
+    test "swapping the workspace path after the check cannot redirect the bind":
+      # Open + validate, then replace the path with a symlink to the bait dir.
+      # bwrap binds the already-open fd, so writes land in the original dir.
+      let orig = testTmp / "swap-ws"
+      let moved = testTmp / "swap-ws-moved"
+      removeDir(orig); removeDir(moved); createDir(orig)
+      let h = openWorkspace(orig)
+      moveDir(orig, moved)
+      createSymlink(baitDir, orig)
+      let r = runBounded(@[bwrapPath()] & bwrapArgv(h.path, "echo landed > swapped.txt"),
+                         5, 4096, "", h.fd)
+      h.close()
+      check r.exitCode == 0
+      check fileExists(moved / "swapped.txt")
+      check not fileExists(baitDir / "swapped.txt")
+      removeFile(orig); removeDir(moved)
 
   suite "containment: communication":
     test "host unix sockets are unreachable":
@@ -131,6 +158,25 @@ else:
       let (o, _) = execCmdEx("pgrep -af '[s]leep 20; touch late-setsid'")
       checkpoint "survivors: " & o
       check o.strip.len == 0
+
+    test "host realm: background children die when the command exits":
+      var c = cfgFor(testTmp); c.unconfinedHost = true; c.shellTimeoutSec = 5
+      let marker = testTmp / "host-bg-late"
+      let r = toolsFor(c)["shell"].run(%*{"command":
+        "(sleep 2; touch " & quoteShell(marker) & ") >/dev/null 2>&1 & echo started"}, c)
+      check "started" in r.output
+      check not r.timedOut
+      sleep(2600)
+      check not fileExists(marker)
+
+    test "host realm: timeout kills the whole process group":
+      var c = cfgFor(testTmp); c.unconfinedHost = true; c.shellTimeoutSec = 1
+      let marker = testTmp / "host-to-late"
+      let r = toolsFor(c)["shell"].run(%*{"command":
+        "(sleep 2; touch " & quoteShell(marker) & ") & sleep 20"}, c)
+      check r.timedOut
+      sleep(2600)
+      check not fileExists(marker)
 
     test "privilege: no new privileges, no host uid 0 capabilities":
       let r = sh("grep -E '^(NoNewPrivs|CapEff)' /proc/self/status")

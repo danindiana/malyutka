@@ -56,6 +56,38 @@ id=$(grep -oE '9M14-[0-9a-f]+-[0-9]{4}' <<<"$out" | head -1)
 "$BIN" journal --ack:"$id" >/dev/null 2>&1 && "$BIN" journal >/dev/null 2>&1 \
   && ok "ack clears the pending action" || bad "ack did not clear $id"
 
+# 5b. Reconcile is distinct from ack: run another interrupted action, reconcile it.
+python3 -I "$HERE/fake_oneshot.py" "$((P2 + 1))" 'sleep 3' & sleep 0.6
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P2 + 1)) --allow-shell --json \
+  'crash 2' > /dev/null 2>&1 &
+M=$!; sleep 1.2; kill -9 $M; wait $M 2>/dev/null
+id2=$("$BIN" journal 2>&1 | grep ' UNKNOWN_OUTCOME ' | grep -oE '9M14-[0-9a-f]+-[0-9]{4}' | head -1)
+"$BIN" journal --reconcile:"$id2" --as:not-executed >/dev/null 2>&1 && "$BIN" journal >/dev/null 2>&1 \
+  && ok "reconcile records an established outcome" || bad "reconcile of $id2"
+
+# 5c. State dir inside the workspace is refused (the agent could edit its own journal).
+MALYUTKA_STATE_DIR="$PWD/.state" "$BIN" run --allow-shell 'x' >/dev/null 2>&1; rc=$?
+[ $rc -eq 5 ] && [ ! -e "$PWD/.state/journal.jsonl" ] && ok "state dir inside workspace -> refused (exit 5)" \
+  || bad "state dir inside workspace exit $rc"
+ln -s "$PWD" "$WORK/ws-alias"
+MALYUTKA_STATE_DIR="$WORK/ws-alias/st" "$BIN" run --allow-shell 'x' >/dev/null 2>&1; rc=$?
+[ $rc -eq 5 ] && ok "state dir reaching the workspace via symlink -> refused (exit 5)" || bad "symlink state dir exit $rc"
+
+# 5d. A tampered journal is CORRUPT: `journal` exits 6 and runs are refused.
+cp "$MALYUTKA_STATE_DIR/journal.jsonl" "$WORK/journal.bak"
+python3 -I - "$MALYUTKA_STATE_DIR/journal.jsonl" <<'PY'
+import sys
+p = sys.argv[1]; lines = open(p).read().split("\n")
+i = next(k for k, l in enumerate(lines) if '"rec":"started"' in l)
+lines[i] = lines[i].replace('"rec":"started"', '"rec":"startex"')
+open(p, "w").write("\n".join(lines))
+PY
+"$BIN" journal >/dev/null 2>&1; rc1=$?
+"$BIN" run 'x' >/dev/null 2>&1; rc2=$?
+[ $rc1 -eq 6 ] && [ $rc2 -eq 5 ] && ok "tampered journal -> CORRUPT (6), runs refused (5)" \
+  || bad "tampered journal: journal exit $rc1, run exit $rc2"
+cp "$WORK/journal.bak" "$MALYUTKA_STATE_DIR/journal.jsonl"
+
 # 6. Fail closed: no usable sandbox -> refuse to run.
 PATH=/nonexistent "$BIN" run --allow-shell 'x' >/dev/null 2>&1; rc=$?
 [ $rc -eq 3 ] && ok "no bwrap -> refuses to run (exit 3)" || bad "no bwrap exit $rc"
