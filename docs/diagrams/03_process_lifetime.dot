@@ -1,0 +1,29 @@
+digraph process_lifetime {
+    graph [bgcolor="#0d1117", rankdir=LR, fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20,
+           label="03 · Process lifetime: nothing a model starts outlives its bound\n ", nodesep=0.35, ranksep=0.5];
+    node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2,
+           margin="0.22,0.15", fillcolor="#161b22", fontsize=12];
+    edge  [color="#8b949e", fontname="Helvetica", fontcolor="#adbac7", penwidth=1.5, arrowsize=0.85, fontsize=10];
+
+    harness [label="malyutka\n(holds journal + liveness lock)", color="#58a6ff", fillcolor="#13294d"];
+    spawn   [label="fork → execve\nstdin=/dev/null\nclose_range(3|4, ~0)", color="#bc8cff"];
+
+    subgraph cluster_sb {
+        label="Sandbox realm"; fontcolor="#3fb950"; color="#3fb950"; style="rounded"; fontsize=13;
+        bwrap [label="bwrap\n--die-with-parent\n(direct child of harness)", color="#3fb950"];
+        ns    [label="PID namespace\nsh + every descendant\n(incl. setsid / double fork)", color="#3fb950"];
+    }
+    subgraph cluster_host {
+        label="Host realm (--unconfined-host waiver)"; fontcolor="#f0883e"; color="#f0883e"; style="rounded,dashed"; fontsize=13;
+        sh    [label="/bin/sh\nsetsid · PDEATHSIG=SIGKILL", color="#f0883e"];
+        grp   [label="its process group\nkilled on exit/timeout", color="#f0883e"];
+        esc   [label="escapes: processes that\nleave the group;\ngrandchildren on harness SIGKILL", color="#f85149"];
+    }
+    kill  [label="timeout (poll) or harness death", color="#d29922"];
+
+    harness -> spawn -> bwrap -> ns;
+    spawn -> sh -> grp;
+    grp -> esc [style=dashed, color="#f85149", label="not covered\n(cgroup: M3)"];
+    kill -> bwrap [label="SIGKILL → namespace torn down", color="#d29922"];
+    kill -> grp   [label="SIGKILL -pgid", color="#d29922"];
+}

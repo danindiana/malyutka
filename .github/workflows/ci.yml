@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Nim ${{ matrix.nim }} · ubuntu-24.04
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        nim: ["1.6.14", "2.2.x"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System packages
+        run: sudo apt-get update -q && sudo apt-get install -y -q bubblewrap shellcheck
+
+      # Ubuntu 24.04 can restrict unprivileged user namespaces through
+      # AppArmor, which bubblewrap needs. CI runners are disposable; see the
+      # README before doing this on a workstation.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || echo "sysctl not present"
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: ${{ matrix.nim }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Toolchain
+        run: nim -v && bwrap --version
+
+      - name: Build
+        run: nimble build -y
+
+      - name: Sandbox probe
+        run: ./malyutka doctor
+
+      - name: Unit, invariant and adversarial suites
+        run: nimble test
+
+      - name: CLI integration (strict provider, SIGKILL, journal)
+        run: tests/integration.sh ./malyutka
+
+      - name: Shell scripts
+        run: shellcheck -S warning tests/*.sh tools/*.sh
+
+  certifier:
+    name: Certifier self-test
+    runs-on: ubuntu-24.04
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: sudo apt-get update -q && sudo apt-get install -y -q bubblewrap
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || echo "sysctl not present"
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: "1.6.14"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: m12-certify against a stand-in model (tests the certifier, not a model)
+        run: tests/m12-selftest.sh
+
+  release-hygiene:
+    name: Release hygiene
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: No binaries in a source release
+        run: mkdir -p "$RUNNER_TEMP/rel" && tools/release.sh "$RUNNER_TEMP/rel"

@@ -1,0 +1,31 @@
+digraph authority_pipeline {
+    graph [bgcolor="#0d1117", rankdir=LR, fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20,
+           label="01 · Authority pipeline: the model proposes, independent gates dispose\n ", nodesep=0.35, ranksep=0.45];
+    node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2,
+           margin="0.25,0.18", fillcolor="#161b22", fontsize=12];
+    edge  [color="#8b949e", fontname="Helvetica", fontcolor="#adbac7", penwidth=1.6, arrowsize=0.9, fontsize=10];
+
+    model    [label="Model\n(OpenAI-compatible:\nOllama · vLLM · any)", color="#58a6ff", fillcolor="#13294d"];
+    proposal [label="ToolCall\n(data, never authority)\nids normalized per turn", color="#58a6ff"];
+
+    subgraph cluster_gates {
+        label="Trusted control plane (harness process)"; fontcolor="#bc8cff"; color="#bc8cff"; style="rounded,dashed"; fontsize=13;
+        registry [label="Registry\ncapability exists?\n(disabled = not advertised)", color="#3fb950"];
+        j1       [label="Journal\nintent  ⟶ fdatasync", color="#d29922"];
+        policy   [label="Policy kernel\nDENY < ASK < ALLOW\neffect ≤ capability ceiling", color="#3fb950"];
+        j2       [label="Journal\ndecision + started\n⟶ fdatasync", color="#d29922"];
+    }
+    subgraph cluster_exec {
+        label="Untrusted execution plane"; fontcolor="#f0883e"; color="#f0883e"; style="rounded"; fontsize=13;
+        broker   [label="Sandbox broker\nbwrap · workspace by fd\nclean fds · scrubbed env\ntimeout · output cap", color="#f0883e"];
+    }
+    obs      [label="Observation\noutcome ⟶ journal\ntool msg answers its call id", color="#39c5cf", fillcolor="#0d2e2e"];
+    deny     [label="DENIED / CANCELLED\n(still a tool reply:\nprotocol stays valid)", color="#f85149"];
+
+    model -> proposal -> registry -> j1 -> policy -> j2 -> broker -> obs;
+    obs -> model [label="next turn", color="#58a6ff", style=dashed, constraint=false];
+    registry -> deny [label="unknown tool", color="#f85149"];
+    j1 -> deny [label="not durable", color="#f85149"];
+    policy -> deny [label="DENY / unanswered ASK", color="#f85149"];
+    broker -> deny [label="no sandbox:\nrefuse, never host", color="#f85149"];
+}

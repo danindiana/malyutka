@@ -1,0 +1,28 @@
+digraph journal_integrity {
+    graph [bgcolor="#0d1117", rankdir=LR, fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20,
+           label="05 · Strict decoding: ValidRecord = Schema ∧ Checksum ∧ Sequence ∧ Transition\n ", nodesep=0.3, ranksep=0.5];
+    node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2,
+           margin="0.2,0.14", fillcolor="#161b22", fontsize=12];
+    edge  [color="#8b949e", fontname="Helvetica", fontcolor="#adbac7", penwidth=1.5, arrowsize=0.85, fontsize=10];
+
+    line   [label="framed line\n\\n{json}\\n\n(flock SH while scanning)", color="#39c5cf", fillcolor="#0d2e2e"];
+    parse  [label="parses?", color="#58a6ff"];
+    schema [label="Schema\nrec, action, w, n,\nts, crc + typed fields", color="#58a6ff"];
+    crc    [label="Checksum\nCRC-32 of record\nwithout crc", color="#58a6ff"];
+    seq    [label="Sequence\nn == last+1 per writer\nin FILE order", color="#58a6ff"];
+    trans  [label="Transition\nper-action state machine\nowner-only records", color="#58a6ff"];
+    valid  [label="valid record\n→ action state", color="#3fb950"];
+    torn   [label="TORN\ninterrupted write:\nits step never proceeded\n(run continues)", color="#d29922"];
+    corrupt[label="CORRUPT\nhistory altered or lost\nruns refused (exit 5)\njournal cmd exit 6", color="#f85149"];
+
+    line -> parse;
+    parse -> schema [label="yes"];
+    parse -> torn [label="no", color="#d29922"];
+    schema -> crc -> seq -> trans -> valid [color="#3fb950"];
+    schema -> corrupt [color="#f85149"];
+    crc -> corrupt [color="#f85149"];
+    seq -> corrupt [color="#f85149"];
+    trans -> corrupt [color="#f85149"];
+    note [label="CRC-32 detects accident and casual tampering,\nnot an adversary with the operator's uid", shape=note, color="#8b949e", fontsize=10];
+    corrupt -> note [style=invis];
+}

@@ -1,0 +1,27 @@
+digraph verification {
+    graph [bgcolor="#0d1117", rankdir=TB, fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20,
+           label="06 · Verification stack: every defense has a test, every test a mutant\n ", nodesep=0.35, ranksep=0.45];
+    node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2,
+           margin="0.22,0.15", fillcolor="#161b22", fontsize=12];
+    edge  [color="#8b949e", fontname="Helvetica", fontcolor="#adbac7", penwidth=1.5, arrowsize=0.85, fontsize=10];
+
+    subgraph cluster_offline {
+        label="Offline (CI: Nim 1.6.14 + 2.2.x)"; fontcolor="#3fb950"; color="#3fb950"; style="rounded"; fontsize=13; labelloc="b";
+        core  [label="test_core\nloop · protocol fuzz (2000 scripts)", color="#3fb950"];
+        inv   [label="test_invariants\nI1–I11 · J · S · L suites", color="#3fb950"];
+        adv   [label="test_adversarial\nescape attempts", color="#3fb950"];
+        integ [label="integration.sh\nstrict fake provider · SIGKILL\njournal tamper · reconcile race", color="#3fb950"];
+    }
+    subgraph cluster_live {
+        label="Target host (M1.2)"; fontcolor="#58a6ff"; color="#58a6ff"; style="rounded"; fontsize=13; labelloc="b";
+        cert [label="m12-certify.sh\nreal model · real AppArmor\nPASS / FAIL / NOT RUN / GAP", color="#58a6ff", fillcolor="#13294d"];
+    }
+    subgraph cluster_meta {
+        label="Testing the tests"; fontcolor="#bc8cff"; color="#bc8cff"; style="rounded,dashed"; fontsize=13; labelloc="t";
+        mut  [label="mutation checks\nremove a defense → its test must fail", color="#bc8cff"];
+        self [label="m12-selftest.sh\n8 scenarios vs stand-in model", color="#bc8cff"];
+    }
+    mut -> core; mut -> inv; mut -> adv; mut -> integ;
+    self -> cert [label="certifier mutants\nmust fail it", color="#bc8cff"];
+    integ -> cert [label="included as a gate", style=dashed];
+}

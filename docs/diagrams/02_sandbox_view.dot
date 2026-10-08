@@ -1,0 +1,30 @@
+digraph sandbox_view {
+    graph [bgcolor="#0d1117", rankdir=TB, fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20,
+           label="02 · What a sandboxed command can see (bwrap, empty tmpfs root + allowlist)\n ", nodesep=0.3, ranksep=0.5];
+    node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2,
+           margin="0.22,0.15", fillcolor="#161b22", fontsize=12];
+    edge  [color="#8b949e", fontname="Helvetica", fontcolor="#adbac7", penwidth=1.4, arrowsize=0.8, fontsize=10];
+
+    cmd [label="/bin/sh -c <model command>\nPID 1's child in a fresh PID namespace", color="#58a6ff", fillcolor="#13294d"];
+
+    subgraph cluster_visible {
+        label="Visible"; fontcolor="#3fb950"; color="#3fb950"; style="rounded"; fontsize=13; labelloc="b";
+        ro  [label="read-only binds\n/usr /etc /opt\n/bin /sbin /lib* (symlinks)", color="#3fb950"];
+        ws  [label="workspace (read-write)\n--bind-fd 3: the fd that was validated\nnever $HOME, /, or a system dir", color="#3fb950"];
+        priv[label="private /tmp (tmpfs, mounted first)\nprivate /dev, /proc", color="#3fb950"];
+    }
+    subgraph cluster_absent {
+        label="Absent / unreachable"; fontcolor="#f85149"; color="#f85149"; style="rounded"; fontsize=13; labelloc="b";
+        home [label="/home, /root\n(~/.ssh, ~/.aws …)", color="#f85149"];
+        run  [label="/run, /var\n(docker.sock, D-Bus,\nssh-agent sockets)", color="#f85149"];
+        net  [label="network\n(--unshare-all:\nloopback only)", color="#f85149"];
+        fds  [label="harness fds & env\n(close_range, /dev/null stdin,\nPATH/HOME/LANG/TERM only)", color="#f85149"];
+        mnt  [label="/mnt /media /srv /sys", color="#f85149"];
+    }
+    cmd -> ro; cmd -> ws; cmd -> priv;
+    cmd -> home [style=dashed, color="#f85149"];
+    cmd -> run  [style=dashed, color="#f85149"];
+    cmd -> net  [style=dashed, color="#f85149"];
+    cmd -> fds  [style=dashed, color="#f85149"];
+    cmd -> mnt  [style=dashed, color="#f85149"];
+}

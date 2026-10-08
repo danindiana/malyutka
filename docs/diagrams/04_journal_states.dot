@@ -1,0 +1,29 @@
+digraph journal_states {
+    graph [bgcolor="#0d1117", rankdir=LR, fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20,
+           label="04 · Write-ahead journal: per-action states (stored records → derived state)\n ", nodesep=0.3, ranksep=0.55];
+    node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2,
+           margin="0.2,0.14", fillcolor="#161b22", fontsize=12];
+    edge  [color="#8b949e", fontname="Helvetica", fontcolor="#adbac7", penwidth=1.5, arrowsize=0.85, fontsize=10];
+
+    prepared   [label="PREPARED\nintent", color="#58a6ff"];
+    denied     [label="DENIED", color="#f85149"];
+    authorized [label="AUTHORIZED\nnever ran", color="#3fb950"];
+    started    [label="started,\nno outcome", color="#d29922", shape=diamond, style="filled", fillcolor="#1f2937"];
+    inprog     [label="IN_PROGRESS\nowner lock held", color="#39c5cf"];
+    ownerunk   [label="OWNER_STATUS_UNKNOWN\nlock missing / foreign /\nunreadable: not reconcilable", color="#f0883e"];
+    unknown    [label="UNKNOWN_OUTCOME\nowner proven dead\nnever re-executed", color="#d29922"];
+    done       [label="COMPLETED · FAILED\nNOT_EXECUTED", color="#3fb950"];
+    ack        [label="ACKNOWLEDGED_UNRESOLVED\nseen; still unknown", color="#bc8cff"];
+    recon      [label="RECONCILED\noperator-established\noutcome", color="#bc8cff"];
+
+    prepared -> denied [label="decision DENY"];
+    prepared -> authorized [label="decision ALLOW"];
+    authorized -> started [label="started (owner)"];
+    started -> done [label="outcome (owner)", color="#3fb950"];
+    started -> inprog [label="liveness: ALIVE", color="#39c5cf", style=dashed];
+    started -> ownerunk [label="liveness: UNKNOWN", color="#f0883e", style=dashed];
+    started -> unknown [label="liveness: DEAD\n(we took its lock)", color="#d29922", style=dashed];
+    unknown -> ack [label="journal --ack\n(under one lock)", color="#bc8cff"];
+    unknown -> recon [label="journal --reconcile\n--as:…", color="#bc8cff"];
+    ack -> recon [label="--reconcile", color="#bc8cff"];
+}
