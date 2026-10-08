@@ -1,4 +1,5 @@
 # MALYUTKA // 9M14
+<img width="554" height="554" alt="Retro 9M14 Malyutka HUD Emblem" src="https://github.com/user-attachments/assets/615c3425-a17c-4eac-a0bd-724805a2d6ca" />
 
 [![CI](https://github.com/danindiana/malyutka/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/danindiana/malyutka/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
