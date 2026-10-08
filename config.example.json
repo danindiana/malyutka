@@ -1,0 +1,9 @@
+{
+  "provider": "ollama",
+  "model": "qwen3.5:latest",
+  "baseUrl": "http://127.0.0.1:11434",
+  "apiKeyEnv": "MALYUTKA_API_KEY",
+  "maxSteps": 16,
+  "allowShell": false,
+  "theme": "warsaw"
+}
