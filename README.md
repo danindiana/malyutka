@@ -50,9 +50,9 @@ nimble build
 nimble test
 ```
 
-**Compile status (0.3.3):**
-- **Nim 1.6.14:** builds warning-free with bubblewrap 0.9.0 and passes 92
-  tests (75 unit/invariant/adversarial + 17 CLI integration), both as root
+**Compile status (0.3.4):**
+- **Nim 1.6.14:** builds warning-free with bubblewrap 0.9.0 and passes 97
+  tests (80 unit/invariant/adversarial + 17 CLI integration), both as root
   and as an **unprivileged user**.
 - **Nim 2.2.4:** passes a semantic `nim check --os:linux` with zero
   diagnostics in Malyutka's sources, using the official compiler built to
@@ -190,7 +190,19 @@ Machine consumers should bypass presentation entirely:
 
 ## Roadmap
 
-### M1.2 — Adversarial certification
+### M1.2 — Integration certification (journal format frozen)
+
+On the target host, as an ordinary user:
+
+```sh
+tests/m12-certify.sh                                    # Ollama, M12_MODEL=qwen3.5:latest
+M12_VLLM_URL=http://127.0.0.1:8000 M12_VLLM_MODEL=… tests/m12-certify.sh
+```
+
+Exit 0 = certified on that host, 1 = failures, 3 = gates not run. The report
+`m12-report-<timestamp>.txt` is the evidence.
+
+### M1.2 — scope
 
 Acceptance: every suite passes, with no unexpected host writes, no
 credential exposure, and no silently unconfined execution.

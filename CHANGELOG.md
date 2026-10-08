@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.4 — M1.2 entry
+
+No journal format change: the format is frozen for M1.2.
+
+- **Three-state writer liveness.** 0.3.3 read every failure to inspect a
+  writer's lock as "dead". That covered a missing, symlinked, foreign or
+  unreadable lock file, and unexpected flock errors, and would have let an
+  operator reconcile an action that might still be running.
+  - Now ALIVE / DEAD (lock acquired) / UNKNOWN; the new
+    OWNER_STATUS_UNKNOWN state blocks ack and reconcile.
+  - Lock files are no longer deleted, so their absence cannot pass for a
+    clean exit.
+  - Tests L1–L5; restoring the 0.3.3 behaviour fails L2–L4.
+- **Release hygiene.** 0.3.1–0.3.3 archives contained a compiled
+  `tests/test_adversarial`. It is untracked, `.gitignore` covers all test
+  executables, and `tools/release.sh` refuses to package ELF files (checked
+  against the 0.3.3 archive).
+- **`tests/m12-certify.sh`.** Your M1.2 checklist as an executable,
+  report-producing gate. Exercised here only against a stand-in model
+  server; its escape gate was mutation-checked.
+- Shell scripts are shellcheck-clean.
+
+
 ## 0.3.3 — Journal integrity
 
 Response to the 0.3.2 audit. All four findings were reproduced against 0.3.2

@@ -93,6 +93,9 @@ proc consoleSink*(theme: Theme): EventSink =
     of "journal.unknown_outcome":
       tag = "WARN"; detail = "UNKNOWN OUTCOME from run " & payload{"run"}.getStr & ": " &
         payload{"tool"}.getStr & " " & short($payload{"args"}, 60) & "  (malyutka journal)"
+    of "journal.owner_unknown":
+      tag = "WARN"; detail = "OWNER STATUS UNKNOWN for " & payload{"action"}.getStr & " (" &
+        payload{"tool"}.getStr & "): cannot tell if its run is alive  (malyutka journal)"
     of "journal.degraded":
       tag = "WARN"; detail = "outcome not journaled: " & payload{"reason"}.getStr
     of "tool.cancelled":

@@ -9,9 +9,10 @@ export MALYUTKA_STATE_DIR="$WORK/state"
 pass=0; fail=0
 ok()  { echo "  [OK] $1"; pass=$((pass+1)); }
 bad() { echo "  [FAILED] $1"; fail=$((fail+1)); }
+# shellcheck disable=SC2046
 cleanup() { kill $(jobs -p) 2>/dev/null; rm -rf "$WORK"; }
 trap cleanup EXIT
-mkdir -p "$WORK/ws" && cd "$WORK/ws"
+mkdir -p "$WORK/ws" && cd "$WORK/ws" || exit 2
 # Ports derived from PID so parallel runs do not collide.
 P1=$((20000 + $$ % 10000)); P2=$((P1 + 1))
 

@@ -31,8 +31,11 @@
 ## Liveness: every journal handle holds an exclusive flock on
 ## <state>/runs/<writer>.lock for its lifetime. The kernel drops it when the
 ## process dies (including SIGKILL), so "started, no outcome" is IN_PROGRESS
-## while the owner lives and UNKNOWN_OUTCOME only once it is dead. Operators
-## cannot ack or reconcile an action that is still running.
+## while the owner lives and UNKNOWN_OUTCOME only once it is PROVEN dead (we
+## took its lock). If liveness cannot be established (lock file missing,
+## unreadable, foreign, symlinked; unexpected flock error) the action is
+## OWNER_STATUS_UNKNOWN, never assumed dead. Operators can ack or reconcile
+## only proven-dead actions. (0.3.4: 0.3.3 treated those failures as dead.)
 ##
 ## Operator decisions (`transact`) scan and append under ONE exclusive lock,
 ## so a concurrent writer cannot change the action between check and append.
@@ -68,6 +71,7 @@ type
     asDenied = "DENIED"                   ## authorization refused
     asAuthorized = "AUTHORIZED"           ## allowed, `started` never durable: never ran
     asInProgress = "IN_PROGRESS"          ## started, no outcome, owner still alive
+    asOwnerUnknown = "OWNER_STATUS_UNKNOWN"  ## started, no outcome, owner liveness cannot be established
     asUnknownOutcome = "UNKNOWN_OUTCOME"  ## started, no outcome, owner dead: may have happened
     asCompleted = "COMPLETED"
     asFailed = "FAILED"                   ## ran, reported failure
@@ -93,7 +97,8 @@ type
     tornLines*: seq[int]
     problems*: seq[string]   ## corruption details
 
-  Liveness* = proc(writer: string): bool {.closure.}
+  WriterLiveness* = enum lvAlive = "ALIVE", lvDead = "DEAD", lvUnknown = "UNKNOWN"
+  Liveness* = proc(writer: string): WriterLiveness {.closure.}
 
 # ---- CRC-32 (IEEE) --------------------------------------------------------
 
@@ -143,17 +148,24 @@ proc safeName(w: string): string =
 proc lockPath(journalPath, writer: string): string =
   parentDir(journalPath) / "runs" / (safeName(writer) & ".lock")
 
-proc writerAlive*(journalPath, writer: string): bool =
-  ## True iff the handle that wrote as `writer` is still open somewhere: its
-  ## exclusive flock is held. The kernel releases it on process death.
+proc writerLiveness*(journalPath, writer: string): WriterLiveness =
+  ## ALIVE iff the writer's exclusive flock is held; DEAD only if we could
+  ## take that lock ourselves (the kernel releases it on process death,
+  ## including SIGKILL). Anything else is UNKNOWN, not DEAD: a missing,
+  ## symlinked, foreign or unreadable lock file, or an unexpected flock error,
+  ## proves nothing about the process. Lock files are never deleted, so a
+  ## missing one means it was removed out from under us.
   let p = lockPath(journalPath, writer)
   let fd = posix.open(cstring(p), O_RDONLY or O_CLOEXEC or lO_NOFOLLOW)
-  if fd < 0: return false
+  if fd < 0: return lvUnknown
   defer: discard posix.close(fd)
+  var st: Stat
+  if fstat(fd, st) != 0 or not S_ISREG(st.st_mode) or st.st_uid != getuid():
+    return lvUnknown
   if c_flock(fd, LOCK_EX or LOCK_NB) == 0:
     discard c_flock(fd, LOCK_UN)
-    return false
-  errno == EWOULDBLOCK
+    return lvDead
+  if errno == EWOULDBLOCK: lvAlive else: lvUnknown
 
 # ---- writing -----------------------------------------------------------------
 
@@ -188,8 +200,7 @@ proc close*(j: Journal) =
     discard posix.close(j.fd)
     j.fd = -1
     discard posix.close(j.lockFd)        # releases the liveness lock
-    removeFile(lockPath(j.path, j.writer))
-    j.lockFd = -1
+    j.lockFd = -1                        # the file stays: its absence must mean UNKNOWN
 
 proc writeAll(fd: cint; data: string) =
   var off = 0
@@ -326,7 +337,11 @@ proc scanContent*(content: string; alive: Liveness): JournalScan =
     else: discard
     byId[id] = a
   for _, a in byId.mpairs:
-    if a.state == asUnknownOutcome and alive(a.owner): a.state = asInProgress
+    if a.state == asUnknownOutcome:
+      case alive(a.owner)
+      of lvAlive: a.state = asInProgress
+      of lvUnknown: a.state = asOwnerUnknown   # blocks ack/reconcile; reported
+      of lvDead: discard
   for _, a in byId: result.actions.add a
   result.health =
     if result.problems.len > 0: jhCorrupt
@@ -349,7 +364,7 @@ proc openForRead(path: string): cint =
     raise newException(JournalError, "cannot read journal " & path & ": " & $strerror(errno))
 
 proc livenessFor(path: string): Liveness =
-  result = proc(w: string): bool = writerAlive(path, w)
+  result = proc(w: string): WriterLiveness = writerLiveness(path, w)
 
 proc scanJournal*(path = defaultJournalPath()): JournalScan =
   let fd = openForRead(path)
@@ -376,6 +391,10 @@ proc transact*(j: Journal; decide: proc(scan: JournalScan): JsonNode): JsonNode 
     rec
   finally:
     j.unlock()
+
+proc ownerUnknown*(scan: JournalScan): seq[ActionSummary] =
+  for a in scan.actions:
+    if a.state == asOwnerUnknown: result.add a
 
 proc unknownOutcomes*(scan: JournalScan): seq[ActionSummary] =
   for a in scan.actions:

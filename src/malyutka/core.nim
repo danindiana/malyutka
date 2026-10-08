@@ -97,6 +97,9 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
         "); inspect it with `malyutka journal` before running again")
     if scan.tornLines.len > 0:
       discard em.emit("journal.torn", %*{"lines": scan.tornLines})
+    for a in ownerUnknown(scan):
+      discard em.emit("journal.owner_unknown", %*{"action": a.action, "run": a.run,
+        "tool": a.tool, "args": a.args, "startedAt": a.startedAt})
     for a in unknownOutcomes(scan):
       discard em.emit("journal.unknown_outcome", %*{"action": a.action, "run": a.run,
         "tool": a.tool, "args": a.args, "startedAt": a.startedAt})

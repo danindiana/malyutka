@@ -1,6 +1,7 @@
 /malyutka
-tests/test_core
-tests/test_invariants
+# compiled test executables: every tests/test_* except the sources
+tests/test_*
+!tests/test_*.nim
 .malyutka/
 nimcache/
 *.jsonl

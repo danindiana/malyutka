@@ -207,12 +207,23 @@ ValidRecord = SchemaValid ∧ ChecksumValid ∧ SequenceValid ∧ TransitionVali
 that never completed, so the step it guarded never proceeded. Anything
 parseable that fails a predicate is *corrupt*.
 
-**Liveness (0.3.3).** Every journal handle holds an exclusive flock on
-`<state>/runs/<writer>.lock` while open. The kernel releases it when the
-process dies, including under SIGKILL.
-- "Started, no outcome" is therefore IN_PROGRESS while its run is alive, and
-  UNKNOWN_OUTCOME only once the run is dead.
-- Operators cannot ack or reconcile a running action. Without this, a
+**Liveness (0.3.3, three-state since 0.3.4).** Every journal handle holds an
+exclusive flock on `<state>/runs/<writer>.lock` while open. The kernel
+releases it when the process dies, including under SIGKILL. A writer is
+classified as:
+- **ALIVE:** the lock is held.
+- **DEAD:** *only* if we can take the lock ourselves.
+- **UNKNOWN:** anything else. That covers a missing, symlinked, foreign or
+  unreadable lock file, or an unexpected flock error. 0.3.3 read all of these
+  as dead.
+
+Lock files are never deleted (one empty file per run), so absence cannot
+mean "cleanly closed"; garbage collection is deferred.
+- "Started, no outcome" is therefore IN_PROGRESS while its run is alive,
+  OWNER_STATUS_UNKNOWN when liveness cannot be established, and
+  UNKNOWN_OUTCOME only once the run is proven dead.
+- Operators cannot ack or reconcile a running action, nor one whose owner's
+  status is unknown. Without this, a
   reconcile of a live action followed by its real `outcome` would be an
   invalid transition, and the journal would falsely read CORRUPT.
 
@@ -259,6 +270,7 @@ Both versions existed only on test machines; move such a journal aside
 | DENIED | authorization refused |
 | AUTHORIZED | allowed, but `started` never became durable: never ran |
 | IN_PROGRESS | started, no outcome, owning run still alive: not reconcilable |
+| OWNER_STATUS_UNKNOWN | started, no outcome, cannot establish whether the owning run is alive: not reconcilable; reported (exit 5) |
 | UNKNOWN_OUTCOME | started, no outcome, owning run dead: may or may not have happened; surfaced every run; never re-executed |
 | COMPLETED / FAILED | ran; outcome recorded |
 | NOT_EXECUTED | started, but confinement refused execution |
@@ -317,6 +329,25 @@ command line. `pgrep -f`/`pkill -f`/awk patterns matched the shell running
 them, or the fake server's argv, four times in development (once killing the
 test shell).
 
+**Releases.** `tools/release.sh OUTDIR` builds from the committed tree and
+refuses to package any ELF file or unexpected executable. 0.3.1–0.3.3 shipped
+a compiled `tests/test_adversarial`, because `.gitignore` named test
+binaries individually; it now ignores `tests/test_*` except `*.nim`.
+
+**M1.2 certification.** `tests/m12-certify.sh` runs on the target host as an
+ordinary user. It covers:
+- native build and offline suites;
+- the sandbox `doctor` probe;
+- live Ollama, and optionally vLLM: plain, tool, multi-call, sandboxed shell,
+  a model-issued escape attempt, and SIGKILL plus restart of a live run;
+- transcript validation of every live session.
+
+It writes a dated report with an environment fingerprint, and marks each
+check PASS, FAIL, INFO (model behaviour, not a harness defect) or NOT RUN.
+Here it was exercised only against a stand-in "cooperative model" server, as
+a test of the script itself; its escape gate was mutation-checked. Real
+models are worlock's job.
+
 **Suites.**
 - `tests/test_core.nim`
 - `tests/test_invariants.nim`
@@ -328,7 +359,7 @@ test shell).
 
 | Nim | How | Result |
 |---|---|---|
-| 1.6.14 (native, Ubuntu apt) | full build + all suites, root and unprivileged | 75 unit + 17 integration pass |
+| 1.6.14 (native, Ubuntu apt) | full build + all suites, root and unprivileged | 80 unit + 17 integration pass |
 | 2.2.4 (official compiler built to wasm, `@live-codes/nim-wasm` 0.4.0) | `nim check --os:linux --cpu:amd64` on the CLI and all three test files, run offline in bwrap | 0 diagnostics in Malyutka sources |
 
 The 2.2.4 check stops at semantic analysis: no 2.x code generation, linking

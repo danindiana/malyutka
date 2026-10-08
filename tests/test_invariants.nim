@@ -567,3 +567,65 @@ suite "strict journal decoding (0.3.3)":
     check n == 1
     check scanJournal(p).health == jhOk
     check stateOf(p, "A") == "RECONCILED"
+
+suite "three-state liveness (0.3.4)":
+  # 0.3.3 read any failure to inspect a writer's lock as "dead", which would
+  # let an operator reconcile an action whose run may still be executing.
+  proc startedBy(name: string): tuple[path, writer: string] =
+    let j = tmpJournal(name)
+    j.append(%*{"rec": "intent", "action": "A", "tool": "shell", "args": {}})
+    j.append(%*{"rec": "decision", "action": "A", "verdict": "ALLOW"})
+    j.append(%*{"rec": "started", "action": "A"})
+    j.close()
+    (j.path, j.writer)
+  proc lockOf(path, writer: string): string = parentDir(path) / "runs" / (writer & ".lock")
+  proc stateA(path: string): string =
+    for a in scanJournal(path).actions:
+      if a.action == "A": return $a.state
+  proc tryAck(path: string): bool =
+    let op = openJournal(path, writer = "operator")
+    defer: op.close()
+    not op.transact(proc(scan: JournalScan): JsonNode =
+      for a in scan.actions:
+        if a.action == "A" and a.state == asUnknownOutcome:
+          return %*{"rec": "ack", "action": "A"}
+      nil).isNil
+
+  test "L1 a cleanly closed writer is DEAD: its lock file remains and is free":
+    let (p, w) = startedBy("l1")
+    check fileExists(lockOf(p, w))
+    check writerLiveness(p, w) == lvDead
+    check stateA(p) == "UNKNOWN_OUTCOME"
+
+  test "L2 a missing lock file is UNKNOWN, not dead, and blocks ack":
+    let (p, w) = startedBy("l2")
+    removeFile(lockOf(p, w))
+    check writerLiveness(p, w) == lvUnknown
+    check stateA(p) == "OWNER_STATUS_UNKNOWN"
+    check not tryAck(p)
+
+  test "L3 a symlinked lock file is UNKNOWN":
+    let (p, w) = startedBy("l3")
+    let lp = lockOf(p, w)
+    let decoy = testTmp / "decoy.lock"
+    writeFile(decoy, "")
+    removeFile(lp); createSymlink(decoy, lp)
+    check writerLiveness(p, w) == lvUnknown
+    check not tryAck(p)
+
+  test "L4 an unreadable or foreign-owned lock file is UNKNOWN":
+    let (p, w) = startedBy("l4")
+    let lp = lockOf(p, w)
+    if getuid() == 0:
+      check posix.chown(cstring(lp), 65534, 65534) == 0   # root bypasses mode bits
+    else:
+      setFilePermissions(lp, {})
+    check writerLiveness(p, w) == lvUnknown
+    check stateA(p) == "OWNER_STATUS_UNKNOWN"
+    check not tryAck(p)
+
+  test "L5 a writer whose run is alive is ALIVE (and SIGKILL makes it DEAD: see S9)":
+    let j = tmpJournal("l5")
+    check writerLiveness(j.path, j.writer) == lvAlive
+    j.close()
+    check writerLiveness(j.path, j.writer) == lvDead

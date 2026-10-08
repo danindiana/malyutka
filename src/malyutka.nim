@@ -1,7 +1,7 @@
 import std/[asyncdispatch, json, os, parseopt, strutils]
 import malyutka/[types, provider, core, session, events, config, sandbox, journal]
 
-const Version = "0.3.3"
+const Version = "0.3.4"
 
 proc usage() =
   echo """malyutka // 9M14 - Linux-native Nim agent harness (v""" & Version & """)
@@ -90,7 +90,10 @@ proc journalCmd() =
           if current == $st: ok = true
         if not ok:
           refusal = target & " is " & (if current.len > 0: current else: "not in the journal") &
-            (if current == $asInProgress: " (its run is still alive)" else: "")
+            (if current == $asInProgress: " (its run is still alive)"
+             elif current == $asOwnerUnknown: " (cannot establish whether its run is alive; " &
+               "check <state>/runs/ and the process table)"
+             else: "")
           return nil
         if ack.len > 0: %*{"rec": "ack", "action": ack, "by": getEnv("USER", "operator")}
         else: %*{"rec": "reconcile", "action": reconcile, "as": asState,
@@ -116,6 +119,10 @@ proc journalCmd() =
     if a.state == asInProgress: running.add a
   for a in running:
     echo "  in progress (run alive): ", a.action, "  ", a.tool, " ", $a.args
+  let unknownOwner = ownerUnknown(scan)
+  for a in unknownOwner:
+    echo "  OWNER STATUS UNKNOWN: ", a.action, "  ", a.tool, " ", $a.args,
+         "  (liveness lock missing or unreadable; not reconcilable until resolved)"
   if unresolved.len == 0:
     echo "no actions with unknown outcome"
   else:
@@ -126,7 +133,7 @@ proc journalCmd() =
     echo "Inspect, then: malyutka journal --reconcile:<ID> --as:completed|failed|not-executed"
     echo "          or: malyutka journal --ack:<ID>   (seen; outcome stays unknown)"
   if scan.health == jhCorrupt: quit(6)
-  var pending = false
+  var pending = unknownOwner.len > 0
   for a in unresolved:
     if a.state == asUnknownOutcome: pending = true
   quit(if pending: 5 else: 0)
