@@ -120,5 +120,30 @@ PATH=/nonexistent "$BIN" run --allow-shell 'x' >/dev/null 2>&1; rc=$?
 (cd "$HOME" && "$BIN" run --allow-shell 'x' >/dev/null 2>&1); rc=$?
 [ $rc -eq 3 ] && ok "\$HOME as workspace -> refused (exit 3)" || bad "\$HOME workspace exit $rc"
 
+# 8. Commitment latch through the real CLI and a real sandboxed shell.
+P3=$((P2 + 3)); P4=$((P2 + 4))   # P1..P2+2 are taken above
+mdir="$WORK/mstate"
+python3 -I "$HERE/fake_oneshot.py" "$P3" 'touch latched.txt' & sleep 0.6
+MALYUTKA_STATE_DIR="$mdir" "$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$P3 \
+  --allow-shell --ask-from:B2 --mandates --json 'no mandate' > "$WORK/m1.jsonl" 2>/dev/null
+if grep -q '"verdict":"DENY"' "$WORK/m1.jsonl" && [ ! -e latched.txt ]; then
+  ok "ASK with no mandate -> denied, nothing ran"
+else bad "ASK without mandate: $(grep policy.decision "$WORK/m1.jsonl")"; fi
+mid=$(MALYUTKA_STATE_DIR="$mdir" "$BIN" mandate --grant --tools:shell --max-effect:B2 \
+  --actions:1 --ttl:600 --goal:'integration' 2>/dev/null | awk '{print $1}')
+python3 -I "$HERE/fake_oneshot.py" "$P4" 'touch latched.txt' & sleep 0.6
+MALYUTKA_STATE_DIR="$mdir" "$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$P4 \
+  --allow-shell --ask-from:B2 --mandates --json 'with mandate' > "$WORK/m2.jsonl" 2>/dev/null
+if [ -n "$mid" ] && grep -q "\"policy\":\"mandate:$mid\"" "$WORK/m2.jsonl" && [ -e latched.txt ]; then
+  ok "latched mandate -> sandboxed shell ran, decision names $mid"
+else bad "mandate run: mid='$mid' $(grep policy.decision "$WORK/m2.jsonl")"; fi
+out=$(MALYUTKA_STATE_DIR="$mdir" "$BIN" mandate 2>&1)
+echo "$out" | grep -q "$mid  EXHAUSTED" && ok "budget of 1 used -> EXHAUSTED" || bad "mandate list: $out"
+sed -i 's/integration/tampered/' "$mdir/mandates.jsonl"
+MALYUTKA_STATE_DIR="$mdir" "$BIN" mandate >/dev/null 2>&1; rc=$?
+MALYUTKA_STATE_DIR="$mdir" "$BIN" run --ask-from:B2 --mandates 'x' >/dev/null 2>&1; rc2=$?
+[ $rc -eq 7 ] && [ $rc2 -eq 7 ] && ok "tampered mandate log -> CORRUPT (7), runs refused (7)" \
+  || bad "tampered mandate log exits $rc/$rc2"
+
 echo "integration: $pass passed, $fail failed"
 [ $fail -eq 0 ]
