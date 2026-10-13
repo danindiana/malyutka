@@ -1,7 +1,7 @@
 import std/[asyncdispatch, json, os, parseopt, strutils, tables]
-import malyutka/[types, provider, core, session, events, config, sandbox, journal, approval, latch, tools]
+import malyutka/[types, provider, core, session, events, config, sandbox, journal, approval, memory, latch, tools]
 
-const Version = "0.4.0"
+const Version = "0.5.0"
 
 proc usage() =
   echo """malyutka // 9M14 - Linux-native Nim agent harness (v""" & Version & """)
@@ -9,6 +9,9 @@ proc usage() =
 Usage:
   malyutka run [options] <task>
   malyutka doctor
+  malyutka sessions [--json]           List saved sessions (newest first)
+  malyutka sessions --show:ID          Print a session transcript
+  malyutka sessions --search:TEXT      Case-insensitive substring search over transcripts
   malyutka journal                     Journal health + actions with unknown outcome
   malyutka journal --reconcile:ID --as:completed|failed|not-executed
                                        Record the outcome you established for an action
@@ -31,6 +34,12 @@ Options:
                              Who answers an ASK (default deny = fail closed). stdin: JSONL
                              control channel (see spec/SPEC-002); off needs --i-know-approvals-off
   --approval-timeout:SEC     Unanswered ASK becomes DENY after SEC (default 300)
+  --resume:ID|last           Continue a saved session with this task as the next user turn
+                             (never re-executes anything; see spec/SPEC-003)
+  --resume-despite-unknown   Resume even if the session has unresolved UNKNOWN_OUTCOME actions
+  --allow-memory             Enable the `memory` tool and inject memory.md into the prompt
+  --soul:PATH                Operator persona file (default <state>/SOUL.md if present)
+  --personality:NAME         concise|teacher|kawaii|terse-ops
   --unconfined-host          WAIVER: run the shell on the host, unsandboxed
   --shell-timeout:SEC        Per-command wall-clock limit (default 30)
   --max-steps:N              Guidance-loop budget (default 16)
@@ -232,6 +241,48 @@ proc journalCmd() =
     if a.state == asUnknownOutcome: pending = true
   quit(if pending: 5 else: 0)
 
+proc sessionsCmd() =
+  var asJson = false
+  var show, search = ""
+  for kind, key, val in getopt(commandLineParams()[1 .. ^1]):
+    if kind == cmdLongOption:
+      case key
+      of "json": asJson = true
+      of "show": show = val
+      of "search": search = val
+      else: stderr.writeLine("error: unknown option --" & key); quit(2)
+  let dir = stateDir() / "sessions"
+  try:
+    if show.len > 0:
+      let s = loadSession(resolveSession(dir, show))
+      echo "session ", s.runId, "  status=", s.meta.status, "  parent=", (if s.meta.parent.len > 0: s.meta.parent else: "-")
+      for m in s.messages:
+        if m.role == rSystem: continue
+        echo "[", $m.role, (if m.name.len > 0: " " & m.name else: ""), "] ", m.content
+        for c in m.toolCalls: echo "    -> ", c.name, " ", $c.args
+      quit(0)
+    if search.len > 0:
+      let hits = searchSessions(dir, search)
+      for h in hits: echo h.runId, "  [", h.role, "]  ", h.snippet
+      if hits.len == 0: echo "no matches"
+      quit(0)
+    let all = listSessions(dir)
+    if asJson:
+      var arr = newJArray()
+      for i in all:
+        arr.add %*{"run": i.runId, "parent": i.meta.parent, "title": i.meta.title, "status": i.meta.status,
+                   "provider": i.meta.provider, "model": i.meta.model, "startedAt": i.meta.startedAt,
+                   "updatedAt": i.meta.updatedAt, "messages": i.messages}
+      echo $arr
+    else:
+      if all.len == 0: echo "no sessions"
+      for i in all:
+        echo i.runId, "  ", alignLeft(i.meta.status, 9), " ", alignLeft(i.meta.model, 22), " ",
+             (if i.meta.title.len > 0: i.meta.title else: "(untitled)")
+    quit(0)
+  except SessionError as e:
+    stderr.writeLine("error: " & e.msg); quit(2)
+
 proc doctor() =
   echo "malyutka: ", Version
   echo "designation: 9M14"
@@ -250,6 +301,7 @@ proc main() =
   let cmd = paramStr(1)
   if cmd == "doctor": doctor(); quit(0)
   if cmd == "journal": journalCmd()
+  if cmd == "sessions": sessionsCmd()
   if cmd == "mandate": mandateCmd()
   if cmd in ["-h", "--help", "help"]: usage(); quit(0)
   if cmd != "run": usage(); quit(2)
@@ -258,6 +310,8 @@ proc main() =
   var words: seq[string]
   var configPath = ""
   var approvalsOffAck = false
+  var resumeSpec, soulFlag = ""
+  var resumeDespite = false
   var p = initOptParser(commandLineParams()[1..^1])
   for kind, key, val in p.getopt():
     if kind == cmdLongOption and key == "config": configPath = val
@@ -275,6 +329,11 @@ proc main() =
         of "api-key": cfg.apiKey = val
         of "allow-shell": cfg.allowShell = true
         of "allow-files": cfg.allowFiles = true
+        of "allow-memory": cfg.allowMemory = true
+        of "resume": resumeSpec = val
+        of "resume-despite-unknown": resumeDespite = true
+        of "soul": soulFlag = val
+        of "personality": cfg.personality = val.toLowerAscii
         of "approvals": cfg.approvals = parseApprovalMode(val)
         of "approval-timeout": cfg.approvalTimeoutSec = parseInt(val)
         of "i-know-approvals-off": approvalsOffAck = true
@@ -300,6 +359,20 @@ proc main() =
   if cfg.approvals == amOff and not approvalsOffAck:
     stderr.writeLine("error: --approvals:off auto-approves every ASK; pass --i-know-approvals-off to confirm")
     quit(2)
+  try: discard personalitySnippet(cfg.personality)
+  except ValueError as e: stderr.writeLine("error: " & e.msg); quit(2)
+  cfg.stateDir = stateDir()
+  if cfg.allowMemory:
+    let (txt, problem) = loadMemory(cfg.stateDir)
+    if problem.len > 0: stderr.writeLine("warning: memory ignored: " & problem)
+    else: cfg.memoryText = txt
+  block soul:
+    let path = if soulFlag.len > 0: soulFlag else: soulPath(cfg.stateDir)
+    let (txt, problem) = loadSoul(path)
+    if problem.len > 0: stderr.writeLine("warning: SOUL ignored: " & problem)
+    elif soulFlag.len > 0 and txt.len == 0 and not fileExists(path):
+      stderr.writeLine("error: --soul file not found: " & path); quit(2)
+    else: cfg.soul = txt
   if cfg.approvalTimeoutSec < 1:
     stderr.writeLine("error: --approval-timeout must be >= 1"); quit(2)
   if cfg.unconfinedHost and not cfg.allowShell:
@@ -325,21 +398,53 @@ proc main() =
     for pr in grants.problems:
       stderr.writeLine("warning: allowlist ignored: " & pr)
     let approver = makeApprover(cfg.approvals, grants, cfg.approvalTimeoutSec)
+    let sessDir = stateDir() / "sessions"
+    var history: seq[Message]
+    var parentId = ""
+    if resumeSpec.len > 0:
+      try:
+        let loaded = loadSession(resolveSession(sessDir, resumeSpec))
+        parentId = loaded.runId
+        history = loaded.messages
+        if not resumeDespite:
+          # Catch-22 made explicit: an unresolved action in this session's lineage
+          # means its transcript may not match reality.
+          let chain = lineage(sessDir, parentId)
+          let scan = scanJournal(journalPath())
+          var open: seq[string]
+          for a in scan.actions:
+            if a.run in chain and a.state in {asUnknownOutcome, asOwnerUnknown, asInProgress}:
+              open.add a.action & " (" & a.tool & ", " & $a.state & ")"
+          if open.len > 0:
+            stderr.writeLine("error: refusing to resume " & parentId & ": unresolved action(s): " &
+              open.join(", ") & "\n  inspect with `malyutka journal`, reconcile/ack them, or pass --resume-despite-unknown")
+            quit(5)
+      except SessionError as e:
+        stderr.writeLine("error: " & e.msg); quit(2)
+    let meta0 = SessionMeta(parent: parentId, title: task.splitLines[0][0 ..< min(task.splitLines[0].len, 80)],
+                            provider: cfg.providerName, model: cfg.model, startedAt: stamp())
+    let checkpoint: Checkpoint = proc(messages: seq[Message]; status: string) =
+      var m = meta0
+      m.status = status
+      m.updatedAt = stamp()
+      saveSession(sessDir / (runId & ".json"), runId, messages, m)
     var store: LatchStore = nil
     var registry = toolsFor(cfg)
     if cfg.mandates:
       store = newLatchStore(mandatePath())
       registry["propose_mandate"] = proposeMandateSpec(store, runId)
     let res = waitFor runAgent(makeProvider(cfg), task, cfg, registry = registry, sink = sink,
-                               runId = runId, journal = j, approver = approver, latch = store)
-    # Outside the workspace, like the journal: the sandboxed agent cannot edit it.
-    saveSession(stateDir() / "sessions" / (res.runId & ".json"), res.runId, res.messages)
+                               runId = runId, journal = j, approver = approver, latch = store,
+                               history = history, checkpoint = checkpoint)
     if cfg.jsonEvents: stderr.writeLine("FINAL: " & res.answer)
     else: stderr.writeLine("\n" & res.answer)
     if res.halt != hrFinal: quit(4)
   except JournalError as e:
     stderr.writeLine("malyutka: journal refused the run: " & headline(e.msg))
     quit(5)
+  except ValueError as e:
+    stderr.writeLine("malyutka: " & headline(e.msg))
+    quit(2)
   except LatchError as e:
     stderr.writeLine("malyutka: mandate log refused the run: " & headline(e.msg))
     quit(7)

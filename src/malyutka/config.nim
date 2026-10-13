@@ -38,6 +38,8 @@ proc loadConfig*(path: string; base = defaultConfig()): AgentConfig =
   if j.hasKey("maxSteps"): result.maxSteps = j["maxSteps"].getInt
   if j.hasKey("allowShell"): result.allowShell = j["allowShell"].getBool
   if j.hasKey("allowFiles"): result.allowFiles = j["allowFiles"].getBool
+  if j.hasKey("allowMemory"): result.allowMemory = j["allowMemory"].getBool
+  if j.hasKey("personality"): result.personality = j["personality"].getStr.toLowerAscii
   if j.hasKey("approvals"): result.approvals = parseApprovalMode(j["approvals"].getStr)
   if j.hasKey("approvalTimeoutSec"): result.approvalTimeoutSec = j["approvalTimeoutSec"].getInt
   if j.hasKey("unconfinedHost"): result.unconfinedHost = j["unconfinedHost"].getBool

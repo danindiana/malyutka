@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.0 sessions, resume, memory, personalities (M4-lite)
+
+- **Incremental sessions**: `sessions/<run>.json` is written atomically (temp +
+  fsync + rename, 0600) after every step, with meta (parent, title, provider,
+  model, status). A crash keeps the last good transcript. Strict decoder:
+  schema, roles, run ids (no path traversal) and symlinks are checked; pre-0.5
+  files load as legacy.
+- **Resume**: `run --resume:<id|prefix|last>`; `sessions [--json]`, `--show`,
+  `--search`. New invariant **I15**: resume rebuilds the message list only,
+  nothing journaled is replayed, the system prompt is rebuilt, and it is refused
+  while the lineage has an unresolved action unless `--resume-despite-unknown`.
+- **Memory** (`--allow-memory`): journaled `memory` tool (add/replace/remove,
+  8 KiB cap, 0600, symlinks refused), injected fenced and labelled untrusted.
+  **SOUL.md** (`--soul`, `<state>/SOUL.md`; refused if group/world-writable) and
+  `--personality` presets.
+- Events: `session.saved`, `session.failed`, `memory.updated`.
+- Tests: `tests/test_sessions.nim` (19 tests; 13 mutants verified to fail them);
+  integration checks 10-11. Not mutant-tested: the atomicity of the session
+  rename (the tests check there is no temp residue and the mode, not a torn write).
+
 ## 0.4.0 M2: file tools and ASK approvals
 
 - **File tools** (`--allow-files`): `read_file`, `search_files`, `write_file`,

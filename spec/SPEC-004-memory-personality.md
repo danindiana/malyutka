@@ -1,6 +1,6 @@
 # SPEC-004 — Memory, SOUL.md, personalities
 
-**Status:** planned · **Invariant:** I1 (model output is data) reused · **Roadmap:** M5-lite
+**Status:** implemented in 0.5.0 · **Invariant:** I1 (model output is data) reused · **Roadmap:** M5-lite
 
 ## Goals
 Durable notes across sessions, and an operator-controlled voice for the agent.

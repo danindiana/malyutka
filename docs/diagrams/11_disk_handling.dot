@@ -8,8 +8,8 @@ digraph disk {
         label="$MALYUTKA_STATE_DIR  (default ~/.local/state/malyutka)"; fontcolor="#d29922"; color="#d29922"; style="rounded";
         journal [label="journal.jsonl\nO_APPEND|O_NOFOLLOW · 0600\nrecords: \\n json crc \\n\nfdatasync per record", shape=note, color="#d29922", fillcolor="#2e2410"];
         locks [label="runs/<writer>.lock\nflock = liveness\nkernel drops lock on death\nnever deleted (GC deferred)", shape=note, color="#d29922", fillcolor="#2e2410"];
-        sessions [label="sessions/<run>.json\nwritten ONCE at run end today\n(planned: atomic per step)", shape=note, color="#d29922", fillcolor="#2e2410"];
-        allow [label="allowlist.json (0.4.0): exact-match grants, 0600,\nO_NOFOLLOW, owner + CRC checked · planned: memory.md · SOUL.md", shape=note, color="#d29922", fillcolor="#2e2410"];
+        sessions [label="sessions/<run>.json\natomic (tmp+fsync+rename) after EVERY step\n0600 · strict decode · meta.parent lineage", shape=note, color="#d29922", fillcolor="#2e2410"];
+        allow [label="allowlist.json: exact-match grants, 0600, O_NOFOLLOW, owner + CRC\nmemory.md: 8 KiB, 0600, only via the journaled memory tool\nSOUL.md: operator-written, refused if group/world-writable", shape=note, color="#d29922", fillcolor="#2e2410"];
     }
     subgraph cluster_ws {
         label="Workspace (operator chosen; not /, $HOME, ancestors, system dirs, /run /proc /sys /dev)"; fontcolor="#f0883e"; color="#f0883e"; style="rounded";

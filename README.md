@@ -60,13 +60,13 @@ The name and the green/amber terminal themes are visual identity only (see
 
 Design docs: [`docs/`](docs/README.md) (Hermes gap analysis, diagrams) · specs: [`spec/`](spec/README.md) · future work: [`todo/`](todo/README.md).
 
-**v0.4.0: M1 (guidance loop) complete; M2 file tools, ASK approvals and the commitment latch added; M1.2 (integration certification)
+**v0.5.0: M1 (guidance loop) complete; M2 file tools, ASK approvals and the commitment latch, and M4-lite sessions/resume/memory added; M1.2 (integration certification)
 passed on a real host**, with one configuration still open: Ubuntu 24.04
 with its AppArmor restriction active (see the table).
 
 | Evidence | Status |
 |---|---|
-| Offline suites: 136 unit/invariant/adversarial/latch + 32 CLI integration | pass on Nim 2.2.12 locally for 0.4.0; the Nim 1.6.14 matrix runs in CI |
+| Offline suites: 155 unit/invariant/adversarial/latch/session + 45 CLI integration | pass on Nim 2.2.12 locally for 0.5.0; the Nim 1.6.14 matrix runs in CI |
 | Native Nim 2.x build and tests | pass on CI (Nim 2.2.x, ubuntu-24.04, unprivileged runner) |
 | Nim 2.2.4 semantic check (`nim check`) | 0 diagnostics in Malyutka sources |
 | Live Ollama tool calling on a real host (qwen3.5:27b): single + multi-call, sandboxed shell, model-issued escape attempt, live SIGKILL + restart | **certified**: [record](docs/certification/M1.2-calisota-20261007.md) (Ubuntu 22.04, Nim 2.2.12, bwrap 0.6.1) |
@@ -157,6 +157,7 @@ there are two options:
 malyutka run [options] <task>
 malyutka doctor
 malyutka journal                     Journal health + actions with unknown outcome
+malyutka sessions [--json]           list saved sessions; --show:ID, --search:TEXT
 malyutka journal --reconcile:ID --as:completed|failed|not-executed
 malyutka journal --ack:ID            Mark it seen, outcome still unknown
 malyutka mandate                     Mandates and mandate-log health
@@ -171,6 +172,9 @@ malyutka mandate --approve:ID [--digest:CRC] | --revoke:ID | --resume:ID
 | `--base-url:URL` | e.g. `http://127.0.0.1:11434` (Ollama) or `http://127.0.0.1:8000` (vLLM) |
 | `--api-key:KEY` | prefer the `MALYUTKA_API_KEY` environment variable |
 | `--allow-shell` | enable the **sandboxed** shell capability |
+| `--resume:ID\|last` | continue a saved session: its transcript becomes the history, `--resume-despite-unknown` overrides the refusal when its lineage has unresolved actions ([SPEC-003](spec/SPEC-003-sessions-resume.md)) |
+| `--allow-memory` | enable the `memory` tool and inject `<state>/memory.md` (fenced, untrusted) into the system prompt ([SPEC-004](spec/SPEC-004-memory-personality.md)) |
+| `--soul:PATH` | operator persona file (default `<state>/SOUL.md`); `--personality:concise\|teacher\|kawaii\|terse-ops` selects a preset |
 | `--allow-files` | enable `read_file`, `search_files`, `write_file`, `patch`, `todo` (workspace only; see [SPEC-001](spec/SPEC-001-file-tools.md)) |
 | `--approvals:deny\|stdin\|tty\|off` | who answers an ASK: nobody (default, fail closed), a JSONL control channel on stdin, the terminal, or everyone (needs `--i-know-approvals-off`; hardline denials still apply). See [SPEC-002](spec/SPEC-002-approvals.md) |
 | `--approval-timeout:SEC` | an unanswered ASK becomes DENY after SEC (default 300) |
@@ -475,7 +479,7 @@ CHANGELOG.md                every release, every audit finding
 | **M1.2** ✓ | integration certification on a real host ([record](docs/certification/M1.2-calisota-20261007.md)); open: 24.04 + AppArmor restriction |
 | **M2** (partial) | Linux capability layer: **files, search, patch, `todo`, ASK approvals ✓ (0.4.0), commitment latch ✓**; bounded background processes still open |
 | M3 | isolation, deepened: per-capability scopes, cgroups, seccomp, credential broker |
-| M4 | ledger: resumable runs, content-addressed artifacts, replay |
+| M4 (partial) | ledger: **resumable runs ✓ (0.5.0, transcript-level, never replays effects)**; content-addressed artifacts and replay still open |
 | M5 | context: token accounting, compaction, skills |
 | M6 | delegation: isolated children with `capabilities(child) ⊆ capabilities(parent)` and budgets |
 | M7 | metacritic: replace `maxSteps` with an EVoC/hysteresis controller (PRODUCTIVE → SUSPECT → PLATEAU; CONTINUE / REDIRECT / DELEGATE / COMPACT / HALT) |

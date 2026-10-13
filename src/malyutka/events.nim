@@ -107,6 +107,12 @@ proc consoleSink*(theme: Theme): EventSink =
         "  needs approval: " & payload{"reason"}.getStr
     of "approval.answer":
       tag = "APPR"; detail = payload{"answer"}.getStr & " (" & payload{"source"}.getStr & ")"
+    of "session.saved":
+      tag = "SAVE"; detail = payload{"status"}.getStr & " (" & $payload{"messages"}.getInt & " messages)"
+    of "session.failed":
+      tag = "WARN"; detail = "session not saved: " & payload{"reason"}.getStr
+    of "memory.updated":
+      tag = "MEM "; detail = payload{"op"}.getStr & " (" & $payload{"bytes"}.getInt & " bytes)"
     of "todo.update":
       tag = "TODO"; detail = $payload{"items"}.len & " item(s)"
     of "agent.final":

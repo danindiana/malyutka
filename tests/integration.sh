@@ -233,5 +233,77 @@ grep -q '"verdict":"DENY"' "$WORK/hard.trace" && ! grep -q '"approval.request"' 
 "$BIN" run --approvals:off 'x' >/dev/null 2>&1; rc=$?
 [ $rc -eq 2 ] && ok "--approvals:off requires --i-know-approvals-off" || bad "approvals off ack (exit $rc)"
 
+# 11. M4-lite: sessions and resume through the real CLI.
+mkdir -p "$WORK/m4" && cd "$WORK/m4" || exit 2
+P4=$((P3 + 20))
+cat > "$WORK/s1.json" <<'JSON'
+[[{"name":"write_file","args":{"path":"keep.txt","content":"PERSISTED-BY-RUN-1"}}]]
+JSON
+python3 -I "$HERE/fake_script.py" "$P4" "$WORK/s1.json" "$WORK/s1.req" & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$P4 --allow-files --json \
+  'first turn' > "$WORK/s1.trace" 2>/dev/null
+sid=$("$BIN" sessions --json | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["run"])')
+[ -n "$sid" ] && grep -q '"session.saved"' "$WORK/s1.trace" \
+  && ok "session checkpointed during the run (session.saved events), listed by 'sessions'" || bad "session list/checkpoint"
+rm -f keep.txt
+jbefore=$(grep -c '"rec"' "$MALYUTKA_STATE_DIR/journal.jsonl")
+python3 -I "$HERE/fake_script.py" $((P4 + 1)) <(echo '[]') "$WORK/s2.req" & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P4 + 1)) --allow-files --json \
+  --resume:"$sid" 'second turn' > "$WORK/s2.trace" 2> "$WORK/s2.err"; rc=$?
+jafter=$(grep -c '"rec"' "$MALYUTKA_STATE_DIR/journal.jsonl")
+if [ $rc -eq 0 ] && grep -q 'PERSISTED-BY-RUN-1\|wrote' "$WORK/s2.err" && grep -q 'first turn' "$WORK/s2.req"; then
+  ok "resume: the model received the earlier transcript"
+else bad "resume transcript (exit $rc): $(cat "$WORK/s2.err")"; fi
+[ ! -e keep.txt ] && [ "$jbefore" = "$jafter" ] \
+  && ok "resume re-executed nothing (file not recreated, journal unchanged)" || bad "resume replayed something (before=$jbefore after=$jafter)"
+"$BIN" sessions --json | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d[0]["parent"]==sys.argv[1] else 1)' "$sid" \
+  && ok "resumed session records its parent" || bad "parent link"
+"$BIN" sessions --search:'first turn' | grep -q "$sid" && ok "sessions --search finds the transcript" || bad "sessions --search"
+"$BIN" run --resume:does-not-exist x >/dev/null 2>&1; rc=$?
+[ $rc -eq 2 ] && ok "resume of a missing session -> exit 2" || bad "missing resume exit $rc"
+
+# Resume refuses while the session's lineage has an unresolved (crashed) action.
+python3 -I "$HERE/fake_oneshot.py" "$((P4 + 2))" 'sleep 3' & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P4 + 2)) --allow-shell --json \
+  'crash for resume' > /dev/null 2>&1 &
+M=$!; sleep 1.3; kill -9 $M; wait $M 2>/dev/null; sleep 0.3
+crashed=$("$BIN" journal 2>&1 | grep ' UNKNOWN_OUTCOME ' | grep -oE '9M14-[0-9a-f]+-[0-9]{4}' | tail -1)
+crun=${crashed%-*}
+"$BIN" run --provider:mock --resume:"$crun" 'continue' >/dev/null 2> "$WORK/s3.err"; rc=$?
+[ $rc -eq 5 ] && grep -q 'unresolved' "$WORK/s3.err" && ok "resume refused while the lineage has an unresolved action (exit 5)" \
+  || bad "resume with unknown outcome (exit $rc): $(cat "$WORK/s3.err")"
+"$BIN" run --provider:mock --resume:"$crun" --resume-despite-unknown 'continue' >/dev/null 2>&1; rc=$?
+[ $rc -eq 0 ] && ok "--resume-despite-unknown overrides, explicitly" || bad "override exit $rc"
+"$BIN" journal --reconcile:"$crashed" --as:not-executed >/dev/null 2>&1 || true
+
+# 12. Memory, SOUL.md, personality reach the system prompt; memory writes are private + journaled.
+cat > "$WORK/mem.json" <<'JSON'
+[[{"name":"memory","args":{"op":"add","text":"operator prefers tabs"}}]]
+JSON
+python3 -I "$HERE/fake_script.py" $((P4 + 3)) "$WORK/mem.json" "$WORK/m1.req" & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P4 + 3)) --allow-memory --json \
+  'remember' > /dev/null 2>&1
+mf="$MALYUTKA_STATE_DIR/memory.md"
+[ -f "$mf" ] && [ "$(stat -c %a "$mf")" = 600 ] && grep -q 'operator prefers tabs' "$mf" \
+  && ok "memory tool wrote memory.md (0600) in the state dir" || bad "memory file"
+[ ! -e "$PWD/memory.md" ] && ok "memory is not in the workspace" || bad "memory.md in workspace"
+printf 'You are a calm lighthouse keeper.' > "$MALYUTKA_STATE_DIR/SOUL.md"; chmod 600 "$MALYUTKA_STATE_DIR/SOUL.md"
+python3 -I "$HERE/fake_script.py" $((P4 + 4)) <(echo '[]') "$WORK/m2.req" & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P4 + 4)) --allow-memory \
+  --personality:terse-ops --json 'hello' > /dev/null 2>&1
+python3 - "$WORK/m2.req" <<'PY' && ok "system prompt carries SOUL.md, personality and fenced memory" || bad "system prompt contents"
+import json, sys
+body = json.loads(open(sys.argv[1]).readline())
+sys_msg = body["messages"][0]["content"]
+assert body["messages"][0]["role"] == "system"
+assert "lighthouse keeper" in sys_msg and "operations log voice" in sys_msg.lower()
+assert "<memory>" in sys_msg and "operator prefers tabs" in sys_msg and "untrusted" in sys_msg
+PY
+"$BIN" run --provider:mock --personality:pirate x >/dev/null 2>&1; rc=$?
+[ $rc -eq 2 ] && ok "unknown personality -> exit 2" || bad "personality exit $rc"
+chmod 666 "$MALYUTKA_STATE_DIR/SOUL.md"
+"$BIN" run --provider:mock x 2>&1 >/dev/null | grep -q 'SOUL ignored' && ok "group/world-writable SOUL.md is ignored with a warning" || bad "unsafe SOUL accepted"
+rm -f "$MALYUTKA_STATE_DIR/SOUL.md"
+
 echo "integration: $pass passed, $fail failed"
 [ $fail -eq 0 ]

@@ -3,7 +3,7 @@
 ## sandbox broker decides where. No path executes a call that was not ALLOWed.
 
 import std/[asyncdispatch, json, os, strutils, sysrand, tables, times]
-import ./[types, provider, tools, policy, events, sandbox, journal, approval, latch]
+import ./[types, provider, tools, policy, events, sandbox, journal, approval, memory, latch]
 
 type
   HaltReason* = enum hrFinal, hrMaxSteps, hrRepetition
@@ -14,10 +14,7 @@ type
     messages*: seq[Message]
 
   SandboxProbe* = proc(): tuple[ok: bool, detail: string] {.closure.}
-
-const SystemPrompt = "You are Malyutka, a small robust agent harness. Prefer simple, " &
-  "verifiable actions. Use tools only when useful. Tool calls are checked by " &
-  "policy before execution and may be denied."
+  Checkpoint* = proc(messages: seq[Message]; status: string) {.closure.}
 
 proc msg(role: Role; content: string): Message =
   Message(role: role, content: content, createdAt: now())
@@ -63,7 +60,9 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
                sandboxProbe: SandboxProbe = defaultProbe;
                journal: Journal = nil;
                approver: Approver = nil;
-               latch: LatchStore = nil): Future[RunResult] {.async.} =
+               latch: LatchStore = nil;
+               history: seq[Message] = @[];
+               checkpoint: Checkpoint = nil): Future[RunResult] {.async.} =
   let em = newEmitter(runId, sink)
   result.runId = runId
   var names = newJArray()
@@ -125,7 +124,27 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
     discard em.emit("mandate.status", %*{"mandates": active})
 
   let schemas = wireSchemas(registry)
-  result.messages = @[msg(rSystem, SystemPrompt), msg(rUser, task)]
+  let sys = msg(rSystem, buildSystemPrompt(cfg))
+  if history.len > 0:
+    # Resume (invariant 15): history only rebuilds the message list. Nothing in
+    # it is replayed; its tool calls and results are inert text.
+    let bad = validateTranscript(history)
+    if bad.len > 0: raise newException(ValueError, "cannot resume: " & bad)
+    result.messages = history
+    if result.messages[0].role == rSystem: result.messages[0] = sys
+    else: result.messages.insert(sys, 0)
+    result.messages.add msg(rUser, task)
+  else:
+    result.messages = @[sys, msg(rUser, task)]
+
+  proc save(status: string) =
+    if checkpoint == nil: return
+    try:
+      checkpoint(result.messages, status)
+      discard em.emit("session.saved", %*{"status": status, "messages": result.messages.len})
+    except CatchableError as e:
+      discard em.emit("session.failed", %*{"reason": e.msg})
+  save("running")
   var lastSig = ""
   var repeats = 0
   var idSeq = 0
@@ -139,6 +158,7 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
       discard em.emit("agent.final", %*{"step": step, "text": action.text})
       result.answer = action.text
       result.halt = hrFinal
+      save("answered")
       return
 
     # Normalize call ids: unique within the turn, whatever the provider sent.
@@ -175,6 +195,7 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
         result.answer = "Halted: " & why
         result.halt = hrRepetition
         result.messages.add msg(rAssistant, result.answer)
+        save("halted")
         return
 
       let decisionId = em.nextId()
@@ -301,8 +322,10 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
           discard em.emit("journal.degraded", %*{"action": decisionId, "reason": e.msg})
           r.output.add "\n[malyutka: outcome not journaled: " & e.msg & "]"
       result.messages.add toolMsg(call.id, call.name, r.output)
+    save("running")
 
   result.answer = "Stopped: maxSteps reached"
   result.halt = hrMaxSteps
   result.messages.add msg(rAssistant, result.answer)
   discard em.emit("agent.halt", %*{"reason": "maxSteps"})
+  save("halted")
