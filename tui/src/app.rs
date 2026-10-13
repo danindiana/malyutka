@@ -31,7 +31,24 @@ pub struct Config {
     pub statusbar: bool,
 }
 
+pub struct Picker {
+    pub models: Vec<crate::ollama::Model>,
+    pub filter: String,
+    pub sel: usize,
+}
+
+impl Picker {
+    pub fn visible(&self) -> Vec<&crate::ollama::Model> {
+        let f = self.filter.to_lowercase();
+        self.models
+            .iter()
+            .filter(|m| m.name.to_lowercase().contains(&f))
+            .collect()
+    }
+}
+
 pub struct App {
+    pub picker: Option<Picker>,
     pub cfg: Config,
     pub skin: Skin,
     pub items: Vec<Item>,
@@ -59,6 +76,7 @@ pub struct App {
 impl App {
     pub fn new(cfg: Config, skin: Skin, doctor: Vec<(String, String)>) -> App {
         App {
+            picker: None,
             cfg,
             skin,
             items: vec![],
@@ -426,5 +444,26 @@ mod tests {
         assert_eq!(a.input, "aé");
         a.delete_word();
         assert_eq!(a.input, "");
+    }
+}
+
+#[cfg(test)]
+mod picker_tests {
+    use super::*;
+    use crate::ollama::Model;
+
+    #[test]
+    fn picker_filters_case_insensitively() {
+        let m = |n: &str| Model {
+            name: n.into(),
+            params: String::new(),
+            size_gb: 1.0,
+        };
+        let p = Picker {
+            models: vec![m("Qwen3:9b"), m("gemma4:12b")],
+            filter: "qwen".into(),
+            sel: 0,
+        };
+        assert_eq!(p.visible().len(), 1);
     }
 }

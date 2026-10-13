@@ -78,6 +78,61 @@ pub fn status_text(app: &App, width: usize) -> String {
     }
 }
 
+fn draw_picker(f: &mut Frame, app: &App, p: &crate::app::Picker, area: Rect) {
+    let s = &app.skin;
+    let vis = p.visible();
+    let w = area.width.min(76);
+    let h = (vis.len().min(14) as u16 + 4).min(area.height);
+    let r = Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    );
+    f.render_widget(Clear, r);
+    let block = Block::bordered()
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::default().fg(s.border))
+        .title(Span::styled(
+            " Select model · ollama ",
+            Style::default().fg(s.title).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(s.bg));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    let rows = inner.height.saturating_sub(2) as usize;
+    let sel = p.sel.min(vis.len().saturating_sub(1));
+    let top = sel.saturating_sub(rows.saturating_sub(1));
+    let mut lines = vec![Line::from(vec![
+        Span::styled("filter ❯ ", Style::default().fg(s.accent)),
+        Span::styled(p.filter.clone(), Style::default().fg(s.prompt)),
+    ])];
+    for (i, m) in vis.iter().enumerate().skip(top).take(rows) {
+        let bg = if i == sel { s.menu_sel } else { s.bg };
+        let cur = if m.name == app.cfg.model { "●" } else { " " };
+        let name_w = (inner.width as usize).saturating_sub(18);
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {cur} "), Style::default().fg(s.ok).bg(bg)),
+            Span::styled(
+                format!("{:<w$}", transcript::trunc(&m.name, name_w), w = name_w),
+                Style::default().fg(s.text).bg(bg),
+            ),
+            Span::styled(
+                format!("{:>6} {:>5.1}G", m.params, m.size_gb),
+                Style::default().fg(s.dim).bg(bg),
+            ),
+        ]));
+    }
+    if vis.is_empty() {
+        lines.push(Line::styled("  no matches", Style::default().fg(s.dim)));
+    }
+    lines.push(Line::styled(
+        " ↑↓ move · type to filter · Enter select · Esc cancel",
+        Style::default().fg(s.dim),
+    ));
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     let s = &app.skin;
     let area = f.area();
@@ -171,6 +226,10 @@ pub fn draw(f: &mut Frame, app: &App) {
         (ia.x + 2 + col as u16).min(ia.right().saturating_sub(1)),
         ia.y + 1 + row,
     ));
+
+    if let Some(p) = &app.picker {
+        draw_picker(f, app, p, area);
+    }
 
     // slash popup
     let sug = app.suggestions();
@@ -271,6 +330,24 @@ mod tests {
         assert!(!status_text(&a, 60).contains("shell:on"));
         assert!(status_text(&a, 60).contains("✓0"));
         assert!(!status_text(&a, 40).contains("✓0"));
+    }
+
+    #[test]
+    fn renders_model_picker() {
+        let mut a = app();
+        let m = |n: &str| crate::ollama::Model {
+            name: n.into(),
+            params: "27B".into(),
+            size_gb: 17.0,
+        };
+        a.picker = Some(crate::app::Picker {
+            models: vec![m("qwen3.5:27b"), m("gemma4:12b")],
+            filter: String::new(),
+            sel: 1,
+        });
+        let s = render(&a, 100, 30);
+        assert!(s.contains("Select model"));
+        assert!(s.contains("qwen3.5:27b") && s.contains("gemma4:12b"));
     }
 
     #[test]

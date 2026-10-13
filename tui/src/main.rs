@@ -1,11 +1,12 @@
 mod app;
 mod commands;
 mod events;
+mod ollama;
 mod runner;
 mod skin;
 mod ui;
 
-use app::{App, Config, Item};
+use app::{App, Config, Item, Picker};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use runner::Msg;
 use skin::Skin;
@@ -21,6 +22,7 @@ USAGE: malyutka-tui [OPTIONS]
   --provider <name>       mock | openai | ollama | vllm
   --model <name>
   --base-url <url>
+  --ollama [url]          use local Ollama (default $OLLAMA_HOST or 127.0.0.1:11434)
   --allow-shell           allow the sandboxed shell tool
   -h, --help";
 
@@ -49,6 +51,10 @@ fn parse_args() -> Result<(Config, String), String> {
             "--model" => cfg.model = val("--model")?,
             "--base-url" => cfg.base_url = val("--base-url")?,
             "--allow-shell" => cfg.allow_shell = true,
+            "--ollama" => {
+                cfg.provider = "ollama".into();
+                cfg.base_url = ollama::default_base();
+            }
             other => return Err(format!("unknown option {other}\n\n{HELP}")),
         }
     }
@@ -138,6 +144,7 @@ fn run_command(app: &mut App, line: &str) {
             app.items.clear();
             app.scroll = 0;
         }
+        "/model" | "/models" if arg.is_empty() => open_picker(app),
         "/model" => {
             app.cfg.model = arg.to_string();
             app.note(format!(
@@ -210,6 +217,68 @@ fn run_command(app: &mut App, line: &str) {
     }
 }
 
+fn ollama_base(app: &App) -> String {
+    if app.cfg.provider == "ollama" && !app.cfg.base_url.is_empty() {
+        app.cfg.base_url.clone()
+    } else {
+        ollama::default_base()
+    }
+}
+
+fn open_picker(app: &mut App) {
+    let base = ollama_base(app);
+    match ollama::list_models(&base) {
+        Ok(models) if models.is_empty() => app
+            .items
+            .push(Item::Warn("Ollama has no chat models".into())),
+        Ok(models) => {
+            let sel = models
+                .iter()
+                .position(|m| m.name == app.cfg.model)
+                .unwrap_or(0);
+            app.picker = Some(Picker {
+                models,
+                filter: String::new(),
+                sel,
+            });
+        }
+        Err(e) => app.items.push(Item::Err(e)),
+    }
+}
+
+fn pick_key(app: &mut App, k: KeyEvent) {
+    let Some(p) = app.picker.as_mut() else { return };
+    let n = p.visible().len();
+    match k.code {
+        KeyCode::Esc => app.picker = None,
+        KeyCode::Up => p.sel = p.sel.saturating_sub(1),
+        KeyCode::Down => p.sel = (p.sel + 1).min(n.saturating_sub(1)),
+        KeyCode::PageUp => p.sel = p.sel.saturating_sub(10),
+        KeyCode::PageDown => p.sel = (p.sel + 10).min(n.saturating_sub(1)),
+        KeyCode::Backspace => {
+            p.filter.pop();
+            p.sel = 0;
+        }
+        KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => app.picker = None,
+        KeyCode::Char(c) => {
+            p.filter.push(c);
+            p.sel = 0;
+        }
+        KeyCode::Enter => {
+            let name = p.visible().get(p.sel).map(|m| m.name.clone());
+            app.picker = None;
+            if let Some(name) = name {
+                let base = ollama_base(app);
+                app.cfg.provider = "ollama".into();
+                app.cfg.base_url = base.clone();
+                app.cfg.model = name.clone();
+                app.note(format!("model = {name} (ollama @ {base})"));
+            }
+        }
+        _ => {}
+    }
+}
+
 fn stop(app: &mut App) {
     if let Some(h) = &app.run {
         app.stopped = true;
@@ -241,6 +310,9 @@ fn submit(app: &mut App, tx: &Sender<Msg>) {
 fn on_key(app: &mut App, k: KeyEvent, tx: &Sender<Msg>) {
     if k.kind != KeyEventKind::Press {
         return;
+    }
+    if app.picker.is_some() {
+        return pick_key(app, k);
     }
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     let alt = k
