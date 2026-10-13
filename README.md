@@ -7,7 +7,7 @@
 [![Platform](https://img.shields.io/badge/platform-linux-informational?logo=linux&logoColor=white)](#requirements)
 [![Sandbox](https://img.shields.io/badge/sandbox-bubblewrap-3fb950)](#the-sandbox)
 [![Version](https://img.shields.io/github/v/tag/danindiana/malyutka?label=version&color=d29922)](CHANGELOG.md)
-[![Milestone](https://img.shields.io/badge/M1.2-certification%20pending-d29922)](#project-status)
+[![Milestone](https://img.shields.io/badge/M1.2-certified%20(Ollama)-3fb950)](#project-status)
 
 **A small, Linux-native, model-neutral agent harness written in Nim, built so
 that a recoverable model mistake cannot become an unrecoverable systems
@@ -58,16 +58,20 @@ The name and the green/amber terminal themes are visual identity only (see
 
 ## Project status
 
+Design docs: [`docs/`](docs/README.md) (Hermes gap analysis, diagrams) · specs: [`spec/`](spec/README.md) · future work: [`todo/`](todo/README.md).
+
 **v0.3.4: M1 (guidance loop) complete; M1.2 (integration certification)
-pending.**
+certified on the maintainer's host (2026-10-11, Ollama `qwen3.5:27b`); vLLM and
+Ubuntu 24.04's AppArmor configuration still uncertified.**
 
 | Evidence | Status |
 |---|---|
 | Offline suites: 80 unit/invariant/adversarial + 17 CLI integration, as root and unprivileged | pass (Nim 1.6.14) |
 | Native Nim 2.x build and tests | pass on CI (Nim 2.2.x, ubuntu-24.04, unprivileged runner) |
 | Nim 2.2.4 semantic check (`nim check`) | 0 diagnostics in Malyutka sources |
-| Live Ollama / vLLM tool-call round trips on a real host | **pending**: `tests/m12-certify.sh` |
-| bubblewrap under Ubuntu 24.04's real AppArmor configuration | **pending**: `tests/m12-certify.sh` |
+| Live Ollama tool-call round trips on a real host | pass: `m12-report-20261011-232806` (Ubuntu 22.04.5, Nim 2.2.12, bwrap 0.6.1, 0 failures) |
+| Live vLLM tool-call round trips | **pending**: optional suite not configured in that run |
+| bubblewrap under Ubuntu 24.04's real AppArmor configuration | **pending**: the certified run had `apparmor_restrict_unprivileged_userns=0` |
 
 Malyutka is early-stage research software. Its *defenses* are tested
 adversarially, and each test is checked by deliberately breaking the defense

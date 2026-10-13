@@ -1,0 +1,24 @@
+digraph rationale {
+    graph [bgcolor="#0d1117", fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20, rankdir=TB,
+           label="08 · Rationale: why the harness is shaped like this\nautonomy follows isolation — capability is granted only after the box around it exists\n ", nodesep=0.4, ranksep=0.5];
+    node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2, margin="0.22,0.14", fillcolor="#161b22", fontsize=12];
+    edge  [color="#8b949e", fontname="Helvetica", fontcolor="#adbac7", penwidth=1.5, arrowsize=0.85, fontsize=10];
+
+    problem [label="The problem\nLLM output is untrusted text that happens to be executable intent\n(prompt injection, hallucinated tools, runaway loops, crashes mid-action)", color="#f85149", fillcolor="#3a1518"];
+
+    p1 [label="Principle 1\nModel output is DATA\n(I1) never authority", color="#58a6ff", fillcolor="#13294d"];
+    p2 [label="Principle 2\nDeny dominates\nDENY < ASK < ALLOW (I2)\nnamed policy per decision (I8)", color="#3fb950"];
+    p3 [label="Principle 3\nNo silent fallback to host\nfailed confinement = failed\nexecution (I5, I6)", color="#f0883e"];
+    p4 [label="Principle 4\nWrite-ahead journal\nintent is durable BEFORE the effect\nuncertainty is recorded, never guessed (I7, I12)", color="#d29922"];
+    p5 [label="Principle 5\nEvery call gets exactly one\nterminal reply — protocol stays\nvalid even when denied (P)", color="#39c5cf", fillcolor="#0d2e2e"];
+
+    gates [label="Four gates in series\ncapability registry → journal → policy kernel → sandbox broker", color="#bc8cff", fillcolor="#2a1f45"];
+    rule  [label="Rule: a milestone is not done until its invariant row says ENFORCED\nevery defence has a test, every test has a mutant that fails it", color="#bc8cff", fillcolor="#2a1f45"];
+    cost  [label="Accepted costs\nfail-closed UX (ASK denied when nobody answers) · journal required for B1+\nno resume yet · strict decoders refuse old journals", color="#d29922", fillcolor="#2e2410"];
+    hermes [label="Contrast with Hermes-style agents\nbreadth first (40+ tools, gateways, cloud backends)\nMalyutka: depth first (few tools, provable boundaries)\nfeatures are added only behind a gate + invariant", color="#58a6ff", fillcolor="#13294d"];
+
+    problem -> {p1 p2 p3 p4 p5};
+    {p1 p2 p3 p4 p5} -> gates -> rule;
+    rule -> cost [style=dashed];
+    rule -> hermes [style=dashed];
+}

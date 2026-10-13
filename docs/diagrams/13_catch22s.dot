@@ -1,0 +1,38 @@
+digraph catch22 {
+    graph [bgcolor="#0d1117", fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20, rankdir=TB,
+           label="13 · Catch-22s: constraints that pull against each other\nand the escape hatch chosen for each\n ", nodesep=0.35, ranksep=0.5];
+    node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2, margin="0.22,0.14", fillcolor="#161b22", fontsize=12];
+    edge  [color="#8b949e", fontname="Helvetica", fontcolor="#adbac7", penwidth=1.5, arrowsize=0.85, fontsize=10];
+
+    subgraph cluster_a { label="1 · Unknown outcomes"; fontcolor="#d29922"; color="#d29922"; style="rounded";
+      a1 [label="Interrupted action\nUNKNOWN_OUTCOME", color="#d29922"];
+      a2 [label="Only an operator who knows the real\noutcome can --ack / --reconcile", color="#d29922"];
+      a3 [label="…but a live or owner-unknown action\ncannot be acked or reconciled", color="#f85149", fillcolor="#3a1518"];
+      a4 [label="Escape: inspect runs/*.lock + process table;\nack leaves it reported on every run", color="#3fb950"];
+      a1 -> a2 -> a3 -> a4; }
+    subgraph cluster_b { label="2 · Where things live"; fontcolor="#f0883e"; color="#f0883e"; style="rounded";
+      b1 [label="Running from $HOME is refused\n(workspace guard)", color="#f0883e"];
+      b2 [label="State dir must not overlap workspace\n(model must not reach journal)", color="#f0883e"];
+      b3 [label="Escape: workspace = a subdirectory;\nstate dir default outside it; exit 5 on overlap", color="#3fb950"];
+      b1 -> b3; b2 -> b3; }
+    subgraph cluster_c { label="3 · Approvals vs headless"; fontcolor="#bc8cff"; color="#bc8cff"; style="rounded";
+      c1 [label="ASK needs a human", color="#bc8cff"];
+      c2 [label="Unattended runs have no human", color="#bc8cff"];
+      c3 [label="Escape today: ASK → DENY (fail closed)\nplanned: stdin/tty approver, 300 s timeout → deny,\nnever auto-approve", color="#3fb950"];
+      c1 -> c3; c2 -> c3; }
+    subgraph cluster_d { label="4 · Journal vs availability"; fontcolor="#58a6ff"; color="#58a6ff"; style="rounded";
+      d1 [label="Any effect above B0 must be journaled first", color="#58a6ff"];
+      d2 [label="Journal can be unavailable / corrupt", color="#58a6ff"];
+      d3 [label="Escape: refuse to act (exit 5/6);\nstrict decoders; move-aside procedure, no auto-migrate", color="#3fb950"];
+      d1 -> d3; d2 -> d3; }
+    subgraph cluster_e { label="5 · Sandbox vs host policy"; fontcolor="#f85149"; color="#f85149"; style="rounded";
+      e1 [label="bwrap needs unprivileged user namespaces", color="#f85149"];
+      e2 [label="Ubuntu 24.04 AppArmor restricts them", color="#f85149"];
+      e3 [label="Escape: AppArmor profile for bwrap (CI uses the sysctl);\nelse exit 3 — never silently run on host;\n--unconfined-host is an explicit waiver", color="#3fb950"];
+      e1 -> e3; e2 -> e3; }
+    subgraph cluster_f { label="6 · Proof of death"; fontcolor="#39c5cf"; color="#39c5cf"; style="rounded";
+      f1 [label="Released flock proves the harness died", color="#39c5cf"];
+      f2 [label="…not that its children or remote effects stopped", color="#39c5cf"];
+      f3 [label="Escape: label such actions UNKNOWN_OUTCOME,\nnever NOT_EXECUTED (cgroups in M3)", color="#3fb950"];
+      f1 -> f3; f2 -> f3; }
+}

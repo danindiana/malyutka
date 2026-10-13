@@ -1,0 +1,33 @@
+digraph gap {
+    graph [bgcolor="#0d1117", fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20, rankdir=LR,
+           label="15 · Hermes-agent feature map vs Malyutka\ngreen: have · blue: implementing now (PR B/C) · amber: deferred (todo/) · grey: non-goal\n ", nodesep=0.15, ranksep=0.7];
+    node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2, margin="0.22,0.14", fillcolor="#161b22", fontsize=12];
+    edge  [color="#8b949e", fontname="Helvetica", fontcolor="#adbac7", penwidth=1.5, arrowsize=0.85, fontsize=10];
+    node [fontsize=11, margin="0.15,0.08"];
+
+    subgraph cluster_have { label="Have"; fontcolor="#3fb950"; color="#3fb950"; style="rounded";
+      h1 [label="OpenAI-compatible providers\n(ollama · vllm · openai)", color="#3fb950"];
+      h2 [label="Sandboxed shell (bwrap)", color="#3fb950"];
+      h3 [label="Policy kernel + journal", color="#3fb950"];
+      h4 [label="TUI · skins · model picker", color="#3fb950"]; }
+    subgraph cluster_now { label="Implementing now"; fontcolor="#58a6ff"; color="#58a6ff"; style="rounded";
+      n1 [label="File tools\nread · write · patch · search", color="#58a6ff", fillcolor="#13294d"];
+      n2 [label="Approvals\nonce/session/always/deny", color="#58a6ff", fillcolor="#13294d"];
+      n3 [label="Session resume\n/retry /undo", color="#58a6ff", fillcolor="#13294d"];
+      n4 [label="todo · memory · SOUL.md\npersonalities", color="#58a6ff", fillcolor="#13294d"]; }
+    subgraph cluster_def { label="Deferred (todo/)"; fontcolor="#d29922"; color="#d29922"; style="rounded";
+      d1 [label="Session search (FTS5)", color="#d29922"];
+      d2 [label="Context compression", color="#d29922"];
+      d3 [label="Skills (agentskills.io)", color="#d29922"];
+      d4 [label="MCP stdio client", color="#d29922"];
+      d5 [label="Subagent delegation", color="#d29922"];
+      d6 [label="Background process tool · cron", color="#d29922"];
+      d7 [label="Docker / SSH backends", color="#d29922"];
+      d8 [label="Checkpoints / rollback", color="#d29922"];
+      d9 [label="Trajectory JSONL export", color="#d29922"]; }
+    subgraph cluster_no { label="Non-goals"; fontcolor="#8b949e"; color="#8b949e"; style="rounded";
+      g1 [label="Messaging gateway (20+ platforms)", color="#8b949e"];
+      g2 [label="Browser / vision / TTS", color="#8b949e"];
+      g3 [label="Cloud sandboxes · Honcho · RL training", color="#8b949e"];
+      g4 [label="Plugin loader (breaks I4)", color="#8b949e"]; }
+}

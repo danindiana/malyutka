@@ -1,0 +1,22 @@
+digraph io {
+    graph [bgcolor="#0d1117", fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20, rankdir=LR,
+           label="12 · I/O paths: every byte in and out of the harness\n ", nodesep=0.3, ranksep=0.6];
+    node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2, margin="0.22,0.14", fillcolor="#161b22", fontsize=12];
+    edge  [color="#8b949e", fontname="Helvetica", fontcolor="#adbac7", penwidth=1.5, arrowsize=0.85, fontsize=10];
+
+    argv [label="argv\nmalyutka run [opts] <task>\n--key:value syntax (Nim parseopt)", shape=cds, color="#58a6ff", fillcolor="#13294d"];
+    env [label="env\nMALYUTKA_PROVIDER/MODEL/BASE_URL\nMALYUTKA_API_KEY / STATE_DIR", shape=cds, color="#58a6ff", fillcolor="#13294d"];
+    cfg [label="--config JSON\napiKeyEnv names an env var", shape=cds, color="#58a6ff", fillcolor="#13294d"];
+    stdin [label="stdin\nunused today\n(planned: approval answers)", shape=cds, color="#d29922", style="filled,dashed"];
+    h [label="malyutka\nharness", shape=box3d, color="#bc8cff", fillcolor="#2a1f45", fontsize=14];
+    stdout [label="stdout (--json)\nJSONL {ts, kind, payload{id, run, causedBy}}\nrun.start step.start tool.proposed policy.decision\ntool.result tool.cancelled journal.* confinement.*\nagent.final agent.halt", shape=cds, color="#39c5cf", fillcolor="#0d2e2e"];
+    stderr [label="stderr\nbanner · themed console lines\nFINAL: <answer> (in --json mode)", shape=cds, color="#39c5cf", fillcolor="#0d2e2e"];
+    exitc [label="exit code\n0 answered · 1 failure · 2 usage\n3 no confinement · 4 halted\n5 journal / unknown outcomes · 6 corrupt", shape=cds, color="#3fb950"];
+    http [label="HTTP (non-streaming)\nPOST <base>/v1/chat/completions\nBearer key optional · timeout\nnon-2xx → IOError (500 B of body)", color="#58a6ff", fillcolor="#13294d"];
+    disk [label="files\njournal.jsonl · runs/*.lock · sessions/*.json", shape=folder, color="#d29922", fillcolor="#2e2410"];
+    child [label="bwrap child\nstdin=/dev/null\nstdout+stderr merged pipe\ncap 64 KiB · timeout → SIGKILL", color="#f0883e", fillcolor="#3a2210"];
+    tui [label="malyutka-tui\nreads stdout + stderr\nGET /api/tags (Ollama)", color="#d29922", fillcolor="#2e2410"];
+
+    {argv env cfg stdin} -> h; h -> {stdout stderr exitc}; h -> http [dir=both]; h -> disk; h -> child [dir=both];
+    stdout -> tui; stderr -> tui; exitc -> tui;
+}
