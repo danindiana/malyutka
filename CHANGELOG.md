@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.0 M2: file tools and ASK approvals
+
+- **File tools** (`--allow-files`): `read_file`, `search_files`, `write_file`,
+  `patch`, `todo`. Paths are resolved with `openat` + `O_NOFOLLOW` from the
+  workspace fd; writes are atomic. New invariant **I13**.
+- **ASK approvals**: `--approvals:deny|stdin|tty|off`, once/session/always/deny,
+  300 s default timeout, `<state>/allowlist.json` (0600, checksummed, strict
+  decode). The approver is consulted only for ASK, so DENY is final (**I14**).
+  New policy layer `approval.dangerous` (pipe-to-shell, force push, recursive
+  chmod 777, destructive SQL, writes to `/etc`, `.env`, `.ssh`, `.git/`); the
+  denylist gains `dd of=/dev/...`.
+- Events: `run.start.schema = "events/2"`, `approval.request`, `approval.answer`,
+  `approval.ignored`, `todo.update`, optional `tool.result.preview`.
+- Found by the new tests: capturing the loop variable in the tool registry made
+  every file tool report effect B0 and skip the journal. Fixed and pinned by a test.
+- Tests: `tests/test_m2.nim` (28 tests; 12 mutants verified to fail them) and
+  integration checks 8-9 using the new scripted `tests/fake_script.py`.
+
 ## 0.3.4 certification tooling, revision 2 (kernel unchanged)
 
 Response to the review of the first certification tooling revision. Each fix

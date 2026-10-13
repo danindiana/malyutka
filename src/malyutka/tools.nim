@@ -4,10 +4,10 @@
 ## the model (removing a capability removes it from the model's context).
 
 import std/[json, tables]
-import ./[types, sandbox]
+import ./[types, sandbox, filetools]
+export filetools.ToolProc
 
 type
-  ToolProc* = proc(args: JsonNode; cfg: AgentConfig): ToolResult {.closure.}
   EffectProc* = proc(args: JsonNode): EffectClass {.closure.}
   ToolSpec* = object
     capability*: Capability
@@ -71,11 +71,25 @@ proc shellSpec(cfg: AgentConfig): ToolSpec =
       ToolResult(ok: r.exitCode == 0, output: output, exitCode: r.exitCode,
                  truncated: r.truncated, timedOut: r.timedOut))
 
+proc fileSpec(name, description: string; parameters: JsonNode; ceiling: EffectClass;
+              run: ToolProc): ToolSpec =
+  ## A proc (not inline in the loop) so each spec's closure owns ITS ceiling:
+  ## capturing the loop variable made every file tool report the last tool's
+  ## effect (B0), which silently skipped the journal.
+  ToolSpec(
+    capability: Capability(name: name, realm: erInProcess, maxEffect: ceiling),
+    description: description, parameters: parameters,
+    effectOf: proc(args: JsonNode): EffectClass = ceiling,
+    run: run)
+
 proc toolsFor*(cfg: AgentConfig): ToolRegistry =
   result = initOrderedTable[string, ToolSpec]()
   result["echo"] = echoSpec()
   if cfg.allowShell:
     result["shell"] = shellSpec(cfg)
+  if cfg.allowFiles:
+    for t in fileToolProcs():
+      result[t.name] = fileSpec(t.name, t.description, t.parameters, t.ceiling, t.run)
 
 proc wireSchemas*(registry: ToolRegistry): JsonNode =
   ## OpenAI-compatible `tools` array for exactly the capabilities that exist.

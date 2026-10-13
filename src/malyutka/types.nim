@@ -31,6 +31,9 @@ type
     exitCode*: int
     truncated*: bool
     timedOut*: bool
+    preview*: string            ## short excerpt/diff surfaced in tool.result events
+    eventKind*: string          ## tool-specific event (e.g. "todo.update"), "" = none
+    eventPayload*: JsonNode
 
   # ---- authority kernel -------------------------------------------------
 
@@ -61,12 +64,19 @@ type
     policyId*: string           ## which layer decided (invariant 8)
     reason*: string
 
+  ApprovalMode* = enum
+    ## Who answers an ASK. `deny` is the fail-closed default.
+    amDeny = "deny", amStdin = "stdin", amTty = "tty", amOff = "off"
+
   Theme* = enum thWarsaw, thNato, thPlain
 
   AgentConfig* = object
     maxSteps*: int
     cwd*: string
     allowShell*: bool
+    allowFiles*: bool           ## enable read_file/search_files/write_file/patch/todo
+    approvals*: ApprovalMode
+    approvalTimeoutSec*: int    ## unanswered ASK becomes DENY after this long
     unconfinedHost*: bool       ## explicit waiver: shell may run unsandboxed
     shellTimeoutSec*: int
     maxOutputBytes*: int
@@ -81,7 +91,8 @@ type
 
 proc baseConfig*(): AgentConfig =
   ## Defaults with no environment or filesystem input (tests use this).
-  AgentConfig(maxSteps: 16, cwd: ".", allowShell: false, unconfinedHost: false,
+  AgentConfig(maxSteps: 16, cwd: ".", allowShell: false, allowFiles: false,
+    approvals: amDeny, approvalTimeoutSec: 300, unconfinedHost: false,
     shellTimeoutSec: 30, maxOutputBytes: 64 * 1024, repeatLimit: 3,
     providerName: "mock", model: "mock", baseUrl: "", apiKey: "",
     requestTimeoutSec: 300, theme: thPlain, jsonEvents: false)

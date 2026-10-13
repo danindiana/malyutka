@@ -85,6 +85,8 @@ could violate it; the column names the milestone that must enforce it.
 | 10 | Context loss/degradation is observable | partial: output truncation, timeouts and unjournaled outcomes are flagged; compaction is M5 | J5, sandbox tests |
 | 11 | Repeated unsuccessful cognition eventually halts | partial: identical-call halt + `maxSteps`; similarity-based R_t is M7 | I11 |
 | 12 | Recovery claims never exceed what was journaled | enforced in its present form: an action with `started` and no `outcome` is UNKNOWN_OUTCOME and never re-executed. Acknowledging it does not mark it resolved; only an explicit `reconcile` does. There is no undo | J6, J15, J16, integration 3–5b |
+| 13 | File tools cannot read or write outside the workspace | enforced: every path is walked component by component with `openat(2)` + `O_NOFOLLOW` from the workspace's own fd (no string path is re-resolved); absolute paths and `..` are refused lexically; writes are temp file + `renameat`. Residual: an operator-placed hard link is writable through | I13 (traversal, absolute, final/intermediate symlink, size/binary), mutants in `tests/test_m2.nim` header |
+| 14 | An approver can only upgrade ASK to ALLOW | enforced: the approver is consulted only on the ASK branch, so a DENY from any layer (including the hardline denylist) is final; unanswered, timed-out, EOF, malformed, wrong-action and raising approvers all deny; allowlist defects (mode, owner, symlink, checksum, schema) make the whole file untrusted | I14, approver mechanics, integration 9 |
 | P | Every proposed tool call receives exactly one terminal result | enforced | completeness tests, protocol fuzz (2000 scripts) |
 
 Invariant **P** is new in 0.3.1. M1.1 violated it: a repetition halt in the

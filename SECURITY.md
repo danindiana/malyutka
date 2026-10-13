@@ -33,6 +33,16 @@ never falls back to the host. Each claim is pinned by a test in
   provider. `/etc` is readable.
 - A hard link *you* place in the workspace pointing outside it is writable
   through.
+- **File tools are confined by path resolution, not by the sandbox.** They run
+  in the harness process, so invariant 13 rests on `openat`/`O_NOFOLLOW`
+  resolution (see `src/malyutka/filetools.nim`). A concurrent sandboxed command
+  can race the workspace tree but cannot make a file tool leave it.
+- **Approvals are an operator decision, not a detector.** The dangerous-command
+  patterns are a prompt trigger and the hardline denylist is a speed bump; the
+  sandbox remains the boundary. `--approvals:off` removes the prompt.
+  An `always` grant is an exact-match entry in `<state>/allowlist.json`
+  (checksummed, 0600); it detects accident and casual edits, not an adversary
+  running as your uid.
 - Model output is untrusted data. Malyutka does not try to detect prompt
   injection; it limits what an injected instruction can do.
 

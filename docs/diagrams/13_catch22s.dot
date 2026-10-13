@@ -18,7 +18,7 @@ digraph catch22 {
     subgraph cluster_c { label="3 · Approvals vs headless"; fontcolor="#bc8cff"; color="#bc8cff"; style="rounded";
       c1 [label="ASK needs a human", color="#bc8cff"];
       c2 [label="Unattended runs have no human", color="#bc8cff"];
-      c3 [label="Escape today: ASK → DENY (fail closed)\nplanned: stdin/tty approver, 300 s timeout → deny,\nnever auto-approve", color="#3fb950"];
+      c3 [label="Escape: default deny; stdin/tty approver,\n300 s timeout / EOF → deny; pre-agreed allowlist\nfor unattended runs; never auto-approve", color="#3fb950"];
       c1 -> c3; c2 -> c3; }
     subgraph cluster_d { label="4 · Journal vs availability"; fontcolor="#58a6ff"; color="#58a6ff"; style="rounded";
       d1 [label="Any effect above B0 must be journaled first", color="#58a6ff"];

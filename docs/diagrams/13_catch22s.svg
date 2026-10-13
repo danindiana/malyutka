@@ -130,10 +130,10 @@
 <!-- c3 -->
 <g id="node10" class="node">
 <title>c3</title>
-<path fill="#161b22" stroke="#3fb950" stroke-width="2" d="M1224,-239C1224,-239 914,-239 914,-239 908,-239 902,-233 902,-227 902,-227 902,-192 902,-192 902,-186 908,-180 914,-180 914,-180 1224,-180 1224,-180 1230,-180 1236,-186 1236,-192 1236,-192 1236,-227 1236,-227 1236,-233 1230,-239 1224,-239"/>
-<text text-anchor="middle" x="1069" y="-219.4" font-family="Helvetica,sans-Serif" font-size="12.00" fill="#e6edf3">Escape today: ASK → DENY (fail closed)</text>
-<text text-anchor="middle" x="1069" y="-206.4" font-family="Helvetica,sans-Serif" font-size="12.00" fill="#e6edf3">planned: stdin/tty approver, 300 s timeout → deny,</text>
-<text text-anchor="middle" x="1069" y="-193.4" font-family="Helvetica,sans-Serif" font-size="12.00" fill="#e6edf3">never auto&#45;approve</text>
+<path fill="#161b22" stroke="#3fb950" stroke-width="2" d="M1217.5,-239C1217.5,-239 920.5,-239 920.5,-239 914.5,-239 908.5,-233 908.5,-227 908.5,-227 908.5,-192 908.5,-192 908.5,-186 914.5,-180 920.5,-180 920.5,-180 1217.5,-180 1217.5,-180 1223.5,-180 1229.5,-186 1229.5,-192 1229.5,-192 1229.5,-227 1229.5,-227 1229.5,-233 1223.5,-239 1217.5,-239"/>
+<text text-anchor="middle" x="1069" y="-219.4" font-family="Helvetica,sans-Serif" font-size="12.00" fill="#e6edf3">Escape: default deny; stdin/tty approver,</text>
+<text text-anchor="middle" x="1069" y="-206.4" font-family="Helvetica,sans-Serif" font-size="12.00" fill="#e6edf3">300 s timeout / EOF → deny; pre&#45;agreed allowlist</text>
+<text text-anchor="middle" x="1069" y="-193.4" font-family="Helvetica,sans-Serif" font-size="12.00" fill="#e6edf3">for unattended runs; never auto&#45;approve</text>
 </g>
 <!-- c1&#45;&gt;c3 -->
 <g id="edge6" class="edge">
