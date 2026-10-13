@@ -1,6 +1,6 @@
 # SPEC-001 — File tools and `todo`
 
-**Status:** planned · **Invariant:** I13 (new) · **Roadmap:** M2
+**Status:** implemented in 0.4.0 · **Invariant:** I13 (new) · **Roadmap:** M2
 
 ## Goals
 Let the model read, search, create and edit files in the workspace without going through

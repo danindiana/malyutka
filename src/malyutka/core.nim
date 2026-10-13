@@ -3,7 +3,7 @@
 ## sandbox broker decides where. No path executes a call that was not ALLOWed.
 
 import std/[asyncdispatch, json, os, strutils, sysrand, tables, times]
-import ./[types, provider, tools, policy, events, sandbox, journal, latch]
+import ./[types, provider, tools, policy, events, sandbox, journal, approval, latch]
 
 type
   HaltReason* = enum hrFinal, hrMaxSteps, hrRepetition
@@ -62,12 +62,13 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
                sink: EventSink = nullSink; runId = newRunId();
                sandboxProbe: SandboxProbe = defaultProbe;
                journal: Journal = nil;
+               approver: Approver = nil;
                latch: LatchStore = nil): Future[RunResult] {.async.} =
   let em = newEmitter(runId, sink)
   result.runId = runId
   var names = newJArray()
   for n, _ in registry: names.add %n
-  discard em.emit("run.start", %*{"provider": p.name, "tools": names,
+  discard em.emit("run.start", %*{"schema": "events/2", "provider": p.name, "tools": names,
                            "maxSteps": cfg.maxSteps, "repeatLimit": cfg.repeatLimit})
 
   # Fail closed before the model acts: a sandboxed capability without a
@@ -234,9 +235,27 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
               "error": err, "causedBy": proposedId})
             missStreak = 0
       if d.verdict == vAsk:
-        # No mandate resolved it and no interactive approver exists: fail closed.
-        d.verdict = vDeny
-        d.reason = "ASK unanswered (no approver attached): " & d.reason
+        # No mandate resolved it. Invariant 14: this is the ONLY place an approver is
+        # consulted, and it only ever sees ASK. A DENY from any layer never reaches it.
+        if approver == nil:
+          d.verdict = vDeny
+          d.reason = "ASK unanswered (no approver attached): " & d.reason
+        else:
+          let req = ApprovalRequest(action: decisionId, tool: call.name,
+            args: call.args, reason: d.reason, policy: d.policyId)
+          var reply = ApprovalReply(answer: aaDeny, source: "error")
+          try: reply = approver(req, em)
+          except CatchableError as e: reply.source = "error: " & e.msg
+          discard em.emit("approval.answer", %*{"action": decisionId,
+            "answer": $reply.answer, "source": reply.source, "causedBy": proposedId})
+          let asked = d.policyId & ": " & d.reason
+          d.policyId = "approval.user"
+          if reply.answer == aaDeny:
+            d.verdict = vDeny
+            d.reason = "denied (" & reply.source & "); asked by " & asked
+          else:
+            d.verdict = vAllow
+            d.reason = "approved " & $reply.answer & " (" & reply.source & "); asked by " & asked
       if journaled:
         try:
           journal.append(%*{"rec": "decision", "action": decisionId,
@@ -268,7 +287,9 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
         r = ToolResult(ok: false, output: "ERROR: " & e.msg, exitCode: -1)
       discard em.emit("tool.result", %*{"name": call.name, "ok": r.ok, "exitCode": r.exitCode,
         "truncated": r.truncated, "timedOut": r.timedOut, "bytes": r.output.len,
-        "causedBy": d.eventId})
+        "causedBy": d.eventId, "preview": r.preview})
+      if r.eventKind.len > 0:
+        discard em.emit(r.eventKind, r.eventPayload)
       if journaled:
         try:
           journal.append(%*{"rec": "outcome", "action": decisionId,

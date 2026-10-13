@@ -8,6 +8,14 @@ proc parseTheme*(s: string): Theme =
   of "plain", "none": thPlain
   else: raise newException(ValueError, "unknown theme: " & s)
 
+proc parseApprovalMode*(s: string): ApprovalMode =
+  case s.toLowerAscii
+  of "deny": amDeny
+  of "stdin": amStdin
+  of "tty": amTty
+  of "off": amOff
+  else: raise newException(ValueError, "unknown approvals mode: " & s)
+
 proc defaultConfig*(): AgentConfig =
   result = baseConfig()
   result.cwd = getCurrentDir()
@@ -29,6 +37,9 @@ proc loadConfig*(path: string; base = defaultConfig()): AgentConfig =
     result.apiKey = getEnv(j["apiKeyEnv"].getStr, result.apiKey)
   if j.hasKey("maxSteps"): result.maxSteps = j["maxSteps"].getInt
   if j.hasKey("allowShell"): result.allowShell = j["allowShell"].getBool
+  if j.hasKey("allowFiles"): result.allowFiles = j["allowFiles"].getBool
+  if j.hasKey("approvals"): result.approvals = parseApprovalMode(j["approvals"].getStr)
+  if j.hasKey("approvalTimeoutSec"): result.approvalTimeoutSec = j["approvalTimeoutSec"].getInt
   if j.hasKey("unconfinedHost"): result.unconfinedHost = j["unconfinedHost"].getBool
   if j.hasKey("shellTimeoutSec"): result.shellTimeoutSec = j["shellTimeoutSec"].getInt
   if j.hasKey("maxOutputBytes"): result.maxOutputBytes = j["maxOutputBytes"].getInt

@@ -60,13 +60,13 @@ The name and the green/amber terminal themes are visual identity only (see
 
 Design docs: [`docs/`](docs/README.md) (Hermes gap analysis, diagrams) · specs: [`spec/`](spec/README.md) · future work: [`todo/`](todo/README.md).
 
-**v0.3.4: M1 (guidance loop) complete; M1.2 (integration certification)
+**v0.4.0: M1 (guidance loop) complete; M2 file tools, ASK approvals and the commitment latch added; M1.2 (integration certification)
 passed on a real host**, with one configuration still open: Ubuntu 24.04
 with its AppArmor restriction active (see the table).
 
 | Evidence | Status |
 |---|---|
-| Offline suites: 80 unit/invariant/adversarial + 17 CLI integration, as root and unprivileged | pass (Nim 1.6.14) |
+| Offline suites: 136 unit/invariant/adversarial/latch + 32 CLI integration | pass on Nim 2.2.12 locally for 0.4.0; the Nim 1.6.14 matrix runs in CI |
 | Native Nim 2.x build and tests | pass on CI (Nim 2.2.x, ubuntu-24.04, unprivileged runner) |
 | Nim 2.2.4 semantic check (`nim check`) | 0 diagnostics in Malyutka sources |
 | Live Ollama tool calling on a real host (qwen3.5:27b): single + multi-call, sandboxed shell, model-issued escape attempt, live SIGKILL + restart | **certified**: [record](docs/certification/M1.2-calisota-20261007.md) (Ubuntu 22.04, Nim 2.2.12, bwrap 0.6.1) |
@@ -76,8 +76,8 @@ with its AppArmor restriction active (see the table).
 Malyutka is early-stage research software. Its *defenses* are tested
 adversarially, and each test is checked by deliberately breaking the defense
 it covers. Its *capabilities* are deliberately minimal: today the model has
-`echo` and a sandboxed `shell`. Richer tools (M2) wait until isolation and
-integration are certified.
+`echo`, a sandboxed `shell`, and (opt-in with `--allow-files`) workspace-confined
+file tools. ASK approvals are real since 0.4.0 but fail closed by default.
 
 ---
 
@@ -171,6 +171,9 @@ malyutka mandate --approve:ID [--digest:CRC] | --revoke:ID | --resume:ID
 | `--base-url:URL` | e.g. `http://127.0.0.1:11434` (Ollama) or `http://127.0.0.1:8000` (vLLM) |
 | `--api-key:KEY` | prefer the `MALYUTKA_API_KEY` environment variable |
 | `--allow-shell` | enable the **sandboxed** shell capability |
+| `--allow-files` | enable `read_file`, `search_files`, `write_file`, `patch`, `todo` (workspace only; see [SPEC-001](spec/SPEC-001-file-tools.md)) |
+| `--approvals:deny\|stdin\|tty\|off` | who answers an ASK: nobody (default, fail closed), a JSONL control channel on stdin, the terminal, or everyone (needs `--i-know-approvals-off`; hardline denials still apply). See [SPEC-002](spec/SPEC-002-approvals.md) |
+| `--approval-timeout:SEC` | an unanswered ASK becomes DENY after SEC (default 300) |
 | `--unconfined-host` | **waiver**: run the shell on the host, unsandboxed (logged as `confinement.waived`) |
 | `--shell-timeout:SEC` | per-command wall clock (default 30) |
 | `--max-steps:N` | guidance-loop budget (default 16) |
@@ -470,7 +473,7 @@ CHANGELOG.md                every release, every audit finding
 |---|---|
 | **M1 / M1.1** ✓ | guidance loop, OpenAI-compatible providers, confined shell, journal |
 | **M1.2** ✓ | integration certification on a real host ([record](docs/certification/M1.2-calisota-20261007.md)); open: 24.04 + AppArmor restriction |
-| M2 | Linux capability layer: files, search, patch, bounded processes, ASK approvals (first piece in: the commitment latch) |
+| **M2** (partial) | Linux capability layer: **files, search, patch, `todo`, ASK approvals ✓ (0.4.0), commitment latch ✓**; bounded background processes still open |
 | M3 | isolation, deepened: per-capability scopes, cgroups, seccomp, credential broker |
 | M4 | ledger: resumable runs, content-addressed artifacts, replay |
 | M5 | context: token accounting, compaction, skills |

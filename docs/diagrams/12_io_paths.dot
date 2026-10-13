@@ -7,9 +7,9 @@ digraph io {
     argv [label="argv\nmalyutka run [opts] <task>\n--key:value syntax (Nim parseopt)", shape=cds, color="#58a6ff", fillcolor="#13294d"];
     env [label="env\nMALYUTKA_PROVIDER/MODEL/BASE_URL\nMALYUTKA_API_KEY / STATE_DIR", shape=cds, color="#58a6ff", fillcolor="#13294d"];
     cfg [label="--config JSON\napiKeyEnv names an env var", shape=cds, color="#58a6ff", fillcolor="#13294d"];
-    stdin [label="stdin\nunused today\n(planned: approval answers)", shape=cds, color="#d29922", style="filled,dashed"];
+    stdin [label="stdin (--approvals:stdin)\nJSONL answers {action, answer}\nunused in deny mode", shape=cds, color="#58a6ff", fillcolor="#13294d"];
     h [label="malyutka\nharness", shape=box3d, color="#bc8cff", fillcolor="#2a1f45", fontsize=14];
-    stdout [label="stdout (--json)\nJSONL {ts, kind, payload{id, run, causedBy}}\nrun.start step.start tool.proposed policy.decision\ntool.result tool.cancelled journal.* confinement.*\nagent.final agent.halt", shape=cds, color="#39c5cf", fillcolor="#0d2e2e"];
+    stdout [label="stdout (--json)\nJSONL {ts, kind, payload{id, run, causedBy}}\nrun.start step.start tool.proposed policy.decision\ntool.result tool.cancelled journal.* confinement.*\nagent.final agent.halt\napproval.request/answer todo.update (events/2)", shape=cds, color="#39c5cf", fillcolor="#0d2e2e"];
     stderr [label="stderr\nbanner · themed console lines\nFINAL: <answer> (in --json mode)", shape=cds, color="#39c5cf", fillcolor="#0d2e2e"];
     exitc [label="exit code\n0 answered · 1 failure · 2 usage\n3 no confinement · 4 halted\n5 journal / unknown outcomes · 6 corrupt", shape=cds, color="#3fb950"];
     http [label="HTTP (non-streaming)\nPOST <base>/v1/chat/completions\nBearer key optional · timeout\nnon-2xx → IOError (500 B of body)", color="#58a6ff", fillcolor="#13294d"];

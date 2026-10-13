@@ -1,4 +1,4 @@
-version       = "0.3.4"
+version       = "0.4.0"
 author        = "Malyutka contributors"
 description   = "Malyutka (9M14): small, robust, model-neutral Linux agent harness in Nim"
 license       = "MIT"
@@ -10,4 +10,5 @@ task test, "Run tests":
   exec "nim c -r --hints:off --path:src tests/test_core.nim"
   exec "nim c -r --hints:off --path:src tests/test_invariants.nim"
   exec "nim c -r --hints:off --path:src tests/test_adversarial.nim"
+  exec "nim c -r --hints:off --path:src tests/test_m2.nim"
   exec "nim c -r --hints:off --path:src tests/test_latch.nim"

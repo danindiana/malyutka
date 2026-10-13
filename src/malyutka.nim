@@ -1,7 +1,7 @@
 import std/[asyncdispatch, json, os, parseopt, strutils, tables]
-import malyutka/[types, provider, core, session, events, config, sandbox, journal, latch, tools]
+import malyutka/[types, provider, core, session, events, config, sandbox, journal, approval, latch, tools]
 
-const Version = "0.3.4"
+const Version = "0.4.0"
 
 proc usage() =
   echo """malyutka // 9M14 - Linux-native Nim agent harness (v""" & Version & """)
@@ -26,6 +26,11 @@ Options:
   --base-url:URL             e.g. http://127.0.0.1:11434 for Ollama
   --api-key:KEY              API key (prefer MALYUTKA_API_KEY)
   --allow-shell              Enable the shell capability (sandboxed with bubblewrap)
+  --allow-files              Enable read_file/search_files/write_file/patch/todo (workspace only)
+  --approvals:deny|stdin|tty|off
+                             Who answers an ASK (default deny = fail closed). stdin: JSONL
+                             control channel (see spec/SPEC-002); off needs --i-know-approvals-off
+  --approval-timeout:SEC     Unanswered ASK becomes DENY after SEC (default 300)
   --unconfined-host          WAIVER: run the shell on the host, unsandboxed
   --shell-timeout:SEC        Per-command wall-clock limit (default 30)
   --max-steps:N              Guidance-loop budget (default 16)
@@ -252,6 +257,7 @@ proc main() =
   var cfg = defaultConfig()
   var words: seq[string]
   var configPath = ""
+  var approvalsOffAck = false
   var p = initOptParser(commandLineParams()[1..^1])
   for kind, key, val in p.getopt():
     if kind == cmdLongOption and key == "config": configPath = val
@@ -268,6 +274,10 @@ proc main() =
         of "base-url": cfg.baseUrl = val
         of "api-key": cfg.apiKey = val
         of "allow-shell": cfg.allowShell = true
+        of "allow-files": cfg.allowFiles = true
+        of "approvals": cfg.approvals = parseApprovalMode(val)
+        of "approval-timeout": cfg.approvalTimeoutSec = parseInt(val)
+        of "i-know-approvals-off": approvalsOffAck = true
         of "unconfined-host": cfg.unconfinedHost = true
         of "shell-timeout": cfg.shellTimeoutSec = parseInt(val)
         of "max-steps": cfg.maxSteps = parseInt(val)
@@ -287,6 +297,11 @@ proc main() =
   except ValueError, IOError:
     stderr.writeLine("error: " & getCurrentExceptionMsg()); quit(2)
   if words.len == 0: stderr.writeLine("error: task required"); quit(2)
+  if cfg.approvals == amOff and not approvalsOffAck:
+    stderr.writeLine("error: --approvals:off auto-approves every ASK; pass --i-know-approvals-off to confirm")
+    quit(2)
+  if cfg.approvalTimeoutSec < 1:
+    stderr.writeLine("error: --approval-timeout must be >= 1"); quit(2)
   if cfg.unconfinedHost and not cfg.allowShell:
     stderr.writeLine("warning: --unconfined-host has no effect without --allow-shell")
 
@@ -306,13 +321,17 @@ proc main() =
     except JournalError as e:
       stderr.writeLine("malyutka: journal unavailable, refusing to run: " & e.msg); quit(5)
     defer: j.close()
+    let grants = newGrantStore(stateDir() / "allowlist.json")
+    for pr in grants.problems:
+      stderr.writeLine("warning: allowlist ignored: " & pr)
+    let approver = makeApprover(cfg.approvals, grants, cfg.approvalTimeoutSec)
     var store: LatchStore = nil
     var registry = toolsFor(cfg)
     if cfg.mandates:
       store = newLatchStore(mandatePath())
       registry["propose_mandate"] = proposeMandateSpec(store, runId)
     let res = waitFor runAgent(makeProvider(cfg), task, cfg, registry = registry, sink = sink,
-                               runId = runId, journal = j, latch = store)
+                               runId = runId, journal = j, approver = approver, latch = store)
     # Outside the workspace, like the journal: the sandboxed agent cannot edit it.
     saveSession(stateDir() / "sessions" / (res.runId & ".json"), res.runId, res.messages)
     if cfg.jsonEvents: stderr.writeLine("FINAL: " & res.answer)

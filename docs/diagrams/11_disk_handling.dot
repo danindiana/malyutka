@@ -9,11 +9,11 @@ digraph disk {
         journal [label="journal.jsonl\nO_APPEND|O_NOFOLLOW · 0600\nrecords: \\n json crc \\n\nfdatasync per record", shape=note, color="#d29922", fillcolor="#2e2410"];
         locks [label="runs/<writer>.lock\nflock = liveness\nkernel drops lock on death\nnever deleted (GC deferred)", shape=note, color="#d29922", fillcolor="#2e2410"];
         sessions [label="sessions/<run>.json\nwritten ONCE at run end today\n(planned: atomic per step)", shape=note, color="#d29922", fillcolor="#2e2410"];
-        planned [label="planned: allowlist.json · memory.md · SOUL.md\n0600 · O_NOFOLLOW · strict decode", shape=note, color="#d29922", style="filled,dashed"];
+        allow [label="allowlist.json (0.4.0): exact-match grants, 0600,\nO_NOFOLLOW, owner + CRC checked · planned: memory.md · SOUL.md", shape=note, color="#d29922", fillcolor="#2e2410"];
     }
     subgraph cluster_ws {
         label="Workspace (operator chosen; not /, $HOME, ancestors, system dirs, /run /proc /sys /dev)"; fontcolor="#f0883e"; color="#f0883e"; style="rounded";
-        wsdir [label="workspace/\nrealpath → O_PATH|O_NOFOLLOW fd\nre-validated via /proc/self/fd", shape=folder, color="#f0883e", fillcolor="#3a2210"];
+        wsdir [label="workspace/\nrealpath → O_PATH|O_NOFOLLOW fd\nre-validated via /proc/self/fd\nfile tools: openat per component", shape=folder, color="#f0883e", fillcolor="#3a2210"];
     }
     subgraph cluster_box {
         label="bwrap view (what the sandboxed shell sees)"; fontcolor="#3fb950"; color="#3fb950"; style="rounded";
