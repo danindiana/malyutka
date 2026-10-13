@@ -36,11 +36,16 @@ pub fn status_text(app: &App, width: usize) -> String {
         &app.cfg.model
     };
     let model = transcript::trunc(model, 26);
+    let turns = if app.turns.is_empty() {
+        String::new()
+    } else {
+        format!(" ↺{}", app.turns.len())
+    };
     let state = if app.busy() {
         format!("step {}", app.step)
     } else {
         "idle".to_string()
-    };
+    } + &turns;
     let el = if app.busy() {
         format!("{}s", app.started.elapsed().as_secs())
     } else {
@@ -130,6 +135,84 @@ fn draw_picker(f: &mut Frame, app: &App, p: &crate::app::Picker, area: Rect) {
         " ↑↓ move · type to filter · Enter select · Esc cancel",
         Style::default().fg(s.dim),
     ));
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_approval(f: &mut Frame, app: &App, a: &crate::app::Approval, area: Rect) {
+    let s = &app.skin;
+    let w = area.width.min(78);
+    let secs = a
+        .deadline
+        .saturating_duration_since(std::time::Instant::now())
+        .as_secs();
+    let args = transcript::wrap(
+        &transcript::trunc(&a.args, 300),
+        w.saturating_sub(6) as usize,
+    );
+    let h = (args.len() as u16 + 8).min(area.height);
+    let r = Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    );
+    f.render_widget(Clear, r);
+    let block = Block::bordered()
+        .border_type(ratatui::widgets::BorderType::Double)
+        .border_style(Style::default().fg(s.warn))
+        .title(Span::styled(
+            " ⚠ Approval required ",
+            Style::default().fg(s.warn).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(s.menu_bg));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(" tool   ", Style::default().fg(s.dim)),
+            Span::styled(
+                a.tool.clone(),
+                Style::default().fg(s.title).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" why    ", Style::default().fg(s.dim)),
+            Span::styled(
+                format!("{} (asked by {})", a.reason, a.policy),
+                Style::default().fg(s.text),
+            ),
+        ]),
+        Line::styled(" args", Style::default().fg(s.dim)),
+    ];
+    for l in args {
+        lines.push(Line::styled(format!("   {l}"), Style::default().fg(s.text)));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled(
+            " [o]",
+            Style::default().fg(s.ok).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" once  ", Style::default().fg(s.text)),
+        Span::styled(
+            "[s]",
+            Style::default().fg(s.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" session  ", Style::default().fg(s.text)),
+        Span::styled(
+            "[a]",
+            Style::default().fg(s.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" always  ", Style::default().fg(s.text)),
+        Span::styled(
+            "[d]",
+            Style::default().fg(s.error).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" deny   auto-deny in {secs}s"),
+            Style::default().fg(s.dim),
+        ),
+    ]));
     f.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -277,6 +360,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         ia.y + 1 + row,
     ));
 
+    if let Some(a) = &app.approval {
+        draw_approval(f, app, a, area);
+    }
     if let Some(p) = &app.skin_pick {
         draw_skin_pick(f, app, p, area);
     }
@@ -331,6 +417,9 @@ mod tests {
                 model: "qwen".into(),
                 base_url: String::new(),
                 allow_shell: true,
+                allow_files: false,
+                allow_memory: false,
+                personality: String::new(),
                 verbose: false,
                 statusbar: true,
             },
@@ -365,6 +454,7 @@ mod tests {
             ok: Some(true),
             t0: std::time::Instant::now(),
             secs: Some(0.3),
+            preview: String::new(),
         });
         a.items.push(Item::Agent("done".into()));
         let s = render(&a, 100, 40);
@@ -426,5 +516,54 @@ mod tests {
         render(&a, 30, 10);
         render(&a, 10, 4);
         render(&a, 24, 8);
+    }
+
+    #[test]
+    fn renders_diff_preview_todo_and_approval_modal() {
+        let mut a = app();
+        a.items.push(Item::Tool {
+            name: "patch".into(),
+            args: "{}".into(),
+            verdict: Some("ALLOW".into()),
+            result: Some("exit=0".into()),
+            ok: Some(true),
+            t0: std::time::Instant::now(),
+            secs: Some(0.1),
+            preview: "--- f.txt\n- hello world\n+ hello malyutka".into(),
+        });
+        a.items.push(Item::Todo(vec![
+            ("done".into(), "write it".into()),
+            ("pending".into(), "test it".into()),
+        ]));
+        let s = render(&a, 100, 40);
+        assert!(
+            s.contains("--- f.txt")
+                && s.contains("- hello world")
+                && s.contains("+ hello malyutka")
+        );
+        assert!(s.contains("☑ write it") && s.contains("☐ test it"));
+        a.approval = Some(crate::app::Approval {
+            action: "A1".into(),
+            tool: "shell".into(),
+            args: "{\"command\":\"git push --force\"}".into(),
+            reason: "force push".into(),
+            policy: "approval.dangerous".into(),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+        });
+        let m = render(&a, 100, 40);
+        assert!(m.contains("Approval required") && m.contains("force push"));
+        assert!(m.contains("[o]") && m.contains("[d]") && m.contains("auto-deny in"));
+        render(&a, 30, 10); // tiny terminal must not panic
+    }
+
+    #[test]
+    fn status_bar_shows_resumed_turns() {
+        let mut a = app();
+        a.turns.push(crate::app::Turn {
+            run_id: "R1".into(),
+            prompt: "p".into(),
+            item_start: 0,
+        });
+        assert!(status_text(&a, 80).contains("↺1"));
     }
 }

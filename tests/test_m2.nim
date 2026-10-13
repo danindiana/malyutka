@@ -101,6 +101,10 @@ suite "I13 file tools stay inside the workspace":
     check readFile(ws / "f.txt") == "one two two three"
     let one = call(reg, cfg, "patch", %*{"path": "f.txt", "old": "one", "new": "1"})
     check one.ok and one.preview.startsWith("--- f.txt")
+    check one.preview == "--- f.txt\n- one\n+ 1"
+    # a new file previews as additions only, without blank +/- noise from the trailing newline
+    let created = call(reg, cfg, "write_file", %*{"path": "n.txt", "content": "a\nb\n"})
+    check created.preview == "--- n.txt\n+ a\n+ b"
     check call(reg, cfg, "patch", %*{"path": "f.txt", "old": "two", "new": "2", "replace_all": true}).ok
     check readFile(ws / "f.txt") == "1 2 2 three"
 

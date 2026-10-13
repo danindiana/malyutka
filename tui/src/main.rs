@@ -24,6 +24,9 @@ USAGE: malyutka-tui [OPTIONS]
   --base-url <url>
   --ollama [url]          use local Ollama (default $OLLAMA_HOST or 127.0.0.1:11434)
   --allow-shell           allow the sandboxed shell tool
+  --allow-files           allow read_file/search_files/write_file/patch/todo (workspace only)
+  --allow-memory          enable the memory tool and inject memory.md
+  --personality <name>    concise | teacher | kawaii | terse-ops
   -h, --help";
 
 fn parse_args() -> Result<(Config, String), String> {
@@ -33,6 +36,9 @@ fn parse_args() -> Result<(Config, String), String> {
         model: String::new(),
         base_url: String::new(),
         allow_shell: false,
+        allow_files: false,
+        allow_memory: false,
+        personality: String::new(),
         verbose: false,
         statusbar: true,
     };
@@ -51,6 +57,9 @@ fn parse_args() -> Result<(Config, String), String> {
             "--model" => cfg.model = val("--model")?,
             "--base-url" => cfg.base_url = val("--base-url")?,
             "--allow-shell" => cfg.allow_shell = true,
+            "--allow-files" => cfg.allow_files = true,
+            "--allow-memory" => cfg.allow_memory = true,
+            "--personality" => cfg.personality = val("--personality")?,
             "--ollama" => {
                 cfg.provider = "ollama".into();
                 cfg.base_url = ollama::default_base();
@@ -98,36 +107,23 @@ fn state_dir() -> std::path::PathBuf {
 }
 
 fn start_run(app: &mut App, task: String, tx: &Sender<Msg>) {
-    let mut args = vec!["run".to_string(), "--json".to_string()];
-    for (k, v) in [
-        ("provider", &app.cfg.provider),
-        ("model", &app.cfg.model),
-        ("base-url", &app.cfg.base_url),
-    ] {
-        if !v.is_empty() {
-            args.push(format!("--{k}:{v}"));
-        }
-    }
-    if app.cfg.allow_shell {
-        args.push("--allow-shell".into());
-    }
-    // A leading '-' would be parsed as an option by the harness.
-    args.push(if task.starts_with('-') {
-        format!("Task: {task}")
-    } else {
-        task
-    });
+    let args = app.run_args(&task);
+    let item_start = app.items.len().saturating_sub(1); // the user item was just pushed
     app.reset_run_state();
+    app.cur_prompt = Some((task, item_start));
     match runner::spawn(&app.cfg.bin, &args, tx.clone()) {
         Ok(h) => app.run = Some(h),
-        Err(e) => app.items.push(Item::Err(format!(
-            "cannot start {}: {e} (use --malyutka-bin)",
-            app.cfg.bin
-        ))),
+        Err(e) => {
+            app.cur_prompt = None;
+            app.items.push(Item::Err(format!(
+                "cannot start {}: {e} (use --malyutka-bin)",
+                app.cfg.bin
+            )))
+        }
     }
 }
 
-fn run_command(app: &mut App, line: &str) {
+fn run_command(app: &mut App, line: &str, tx: &Sender<Msg>) {
     let (cmd, arg) = line
         .split_once(' ')
         .map_or((line, ""), |(c, a)| (c, a.trim()));
@@ -140,9 +136,66 @@ fn run_command(app: &mut App, line: &str) {
             app.note(t.join("\n"));
             app.note("keys: Enter send · Alt+Enter/Ctrl+J newline · Tab complete · PgUp/PgDn scroll · Ctrl+C clear/stop/quit");
         }
-        "/new" | "/clear" => {
+        "/new" => {
+            app.items.clear();
+            app.turns.clear();
+            app.session = None;
+            app.scroll = 0;
+        }
+        "/clear" => {
             app.items.clear();
             app.scroll = 0;
+        }
+        "/undo" | "/retry" if app.busy() => app.note("a task is running; /stop first"),
+        "/undo" => match app.undo_turn() {
+            Some(p) => app.set_input(p),
+            None => app.note("nothing to undo"),
+        },
+        "/retry" => match app.undo_turn() {
+            Some(p) => {
+                app.items.push(Item::User(p.clone()));
+                start_run(app, p, tx);
+            }
+            None => app.note("nothing to retry"),
+        },
+        "/sessions" => {
+            let o = runner::capture(&app.cfg.bin, &["sessions"]);
+            app.note(o.trim_end().to_string());
+        }
+        "/resume" if arg.is_empty() => app.note(match &app.session {
+            Some(s) => format!("resuming from {s} ({} turn(s))", app.turns.len()),
+            None => "no active session; the next prompt starts fresh".to_string(),
+        }),
+        "/resume" => {
+            app.session = Some(arg.to_string());
+            app.note(format!("next prompt resumes session {arg}"));
+        }
+        "/memory" => {
+            let p = state_dir().join("memory.md");
+            match std::fs::read_to_string(&p) {
+                Ok(t) if !t.trim().is_empty() => app.note(t.trim_end().to_string()),
+                Ok(_) => app.note("memory is empty"),
+                Err(_) => app.note(format!("no memory file at {}", p.display())),
+            }
+        }
+        "/personality" => {
+            app.cfg.personality = arg.to_string();
+            app.note(format!(
+                "personality = {}",
+                if arg.is_empty() { "(none)" } else { arg }
+            ));
+        }
+        "/tools" => {
+            match arg {
+                "files" => app.cfg.allow_files = !app.cfg.allow_files,
+                "shell" => app.cfg.allow_shell = !app.cfg.allow_shell,
+                "memory" => app.cfg.allow_memory = !app.cfg.allow_memory,
+                _ => {}
+            }
+            app.note(format!(
+                "tools: files={} shell={} memory={}   (toggle: /tools files|shell|memory)",
+                app.cfg.allow_files, app.cfg.allow_shell, app.cfg.allow_memory
+            ));
         }
         "/model" | "/models" if arg.is_empty() => open_picker(app),
         "/model" => {
@@ -343,7 +396,7 @@ fn submit(app: &mut App, tx: &Sender<Msg>) {
     app.clear_input();
     app.scroll = 0;
     if text.starts_with('/') {
-        run_command(app, &text);
+        run_command(app, &text, tx);
     } else if app.busy() {
         app.note("a task is running — wait for it or /stop");
         app.set_input(text);
@@ -355,6 +408,19 @@ fn submit(app: &mut App, tx: &Sender<Msg>) {
 
 fn on_key(app: &mut App, k: KeyEvent, tx: &Sender<Msg>) {
     if k.kind != KeyEventKind::Press {
+        return;
+    }
+    if app.approval.is_some() {
+        match k.code {
+            KeyCode::Char('o') | KeyCode::Char('y') => app.answer_approval("once"),
+            KeyCode::Char('s') => app.answer_approval("session"),
+            KeyCode::Char('a') => app.answer_approval("always"),
+            KeyCode::Char('d') | KeyCode::Char('n') | KeyCode::Esc => app.answer_approval("deny"),
+            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.answer_approval("deny")
+            }
+            _ => {}
+        }
         return;
     }
     if app.skin_pick.is_some() {
@@ -394,7 +460,7 @@ fn on_key(app: &mut App, k: KeyEvent, tx: &Sender<Msg>) {
                 app.delete();
             }
         }
-        KeyCode::F(2) => run_command(app, "/skin"),
+        KeyCode::F(2) => run_command(app, "/skin", tx),
         KeyCode::Char('j') if ctrl => app.insert('\n'),
         KeyCode::Char('u') if ctrl => app.clear_input(),
         KeyCode::Char('w') if ctrl => app.delete_word(),

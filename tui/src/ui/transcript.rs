@@ -139,8 +139,47 @@ fn tool_emoji(name: &str) -> &'static str {
     match name {
         "shell" => "💻",
         "echo" => "💬",
+        "read_file" => "📖",
+        "write_file" => "📝",
+        "patch" => "🔧",
+        "search_files" => "🔎",
+        "todo" => "📋",
+        "memory" => "🧠",
         _ => "⚡",
     }
+}
+
+/// Hermes-style diff block: removed lines white on dark red, added lines white on
+/// dark green, headers and context dim. Capped so one patch cannot flood the view.
+pub fn preview_lines(preview: &str, width: usize, s: &crate::skin::Skin) -> Vec<Line<'static>> {
+    let mut out = vec![];
+    for l in preview.lines().take(14) {
+        let body = trunc(l, width.saturating_sub(6));
+        let style = if l.starts_with("- ") {
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Rgb(0x78, 0x14, 0x14))
+        } else if l.starts_with("+ ") {
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Rgb(0x14, 0x5A, 0x14))
+        } else if l.starts_with("---") {
+            Style::default().fg(s.title)
+        } else {
+            Style::default().fg(s.dim)
+        };
+        out.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(body, style),
+        ]));
+    }
+    if preview.lines().count() > 14 {
+        out.push(Line::from(Span::styled(
+            "    …",
+            Style::default().fg(s.dim),
+        )));
+    }
+    out
 }
 
 pub fn build(app: &App, width: usize) -> Vec<Line<'static>> {
@@ -195,6 +234,7 @@ pub fn build(app: &App, width: usize) -> Vec<Line<'static>> {
                 result,
                 ok,
                 secs,
+                preview,
                 ..
             } => {
                 let (vtxt, vcol) = match verdict.as_deref() {
@@ -207,7 +247,7 @@ pub fn build(app: &App, width: usize) -> Vec<Line<'static>> {
                     (Some(r), Some(t)) => format!("  {r} {t:.1}s"),
                     _ => String::new(),
                 };
-                let head = format!("{} {} {:<8} ", s.tool_prefix, tool_emoji(name), name);
+                let head = format!("{} {} {:<12} ", s.tool_prefix, tool_emoji(name), name);
                 let room = width.saturating_sub(head.chars().count() + tail.chars().count() + 9);
                 let tail_col = match ok {
                     Some(true) => s.ok,
@@ -220,6 +260,23 @@ pub fn build(app: &App, width: usize) -> Vec<Line<'static>> {
                     Span::styled(format!(" [{vtxt}]"), Style::default().fg(vcol)),
                     Span::styled(tail, Style::default().fg(tail_col)),
                 ]));
+                out.extend(preview_lines(preview, width, s));
+            }
+            Item::Todo(list) => {
+                for (st, text) in list {
+                    let (mark, col) = match st.as_str() {
+                        "done" => ("☑", s.ok),
+                        "in_progress" => ("◐", s.accent),
+                        _ => ("☐", s.dim),
+                    };
+                    out.push(Line::from(vec![
+                        Span::styled(format!("  {mark} "), Style::default().fg(col)),
+                        Span::styled(
+                            trunc(text, body_w.saturating_sub(4)),
+                            Style::default().fg(s.text),
+                        ),
+                    ]));
+                }
             }
             Item::Note(t) => {
                 for l in wrap(t, body_w) {

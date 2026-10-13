@@ -16,6 +16,7 @@
   **SOUL.md** (`--soul`, `<state>/SOUL.md`; refused if group/world-writable) and
   `--personality` presets.
 - Events: `session.saved`, `session.failed`, `memory.updated`.
+- `write_file` previews show additions only (no blank `-`/`+` lines); found while wiring the TUI diff view.
 - Tests: `tests/test_sessions.nim` (19 tests; 13 mutants verified to fail them);
   integration checks 10-11. Not mutant-tested: the atomicity of the session
   rename (the tests check there is no temp residue and the mode, not a torn write).
