@@ -98,4 +98,14 @@ let dangerousLayer* = PolicyLayer(id: "approval.dangerous",
         if why.len > 0: return (vAsk, why)
     (vAllow, ""))
 
-proc defaultLayers*(): seq[PolicyLayer] = @[confinementLayer, denylistLayer, dangerousLayer]
+let approvalLayer* = PolicyLayer(id: "approval",
+  check: proc(call: ToolCall; cap: Capability; effect: EffectClass;
+              cfg: AgentConfig): tuple[verdict: Verdict, reason: string] =
+    ## Opt-in (--ask-from). Can only lower ALLOW to ASK. An ASK is resolved by
+    ## a latched mandate (latch.nim) or, with none attached, fails closed.
+    if cfg.askEnabled and effect >= cfg.askFrom:
+      (vAsk, "effect " & $effect & " needs approval (ask-from " & $cfg.askFrom & ")")
+    else: (vAllow, ""))
+
+proc defaultLayers*(): seq[PolicyLayer] =
+  @[confinementLayer, denylistLayer, dangerousLayer, approvalLayer]

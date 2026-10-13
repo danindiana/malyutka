@@ -2,7 +2,7 @@
 ## Every defence here has a mutant that must fail it; see ARCHITECTURE.md.
 
 import std/[asyncdispatch, json, os, posix, sets, strutils, tables, unittest]
-import malyutka/[types, provider, core, policy, tools, events, journal, approval, filetools]
+import malyutka/[types, provider, core, policy, tools, events, journal, approval, filetools, latch]
 
 let root = getTempDir() / ("malyutka-m2-" & $getCurrentProcessId())
 createDir(root)
@@ -336,3 +336,55 @@ suite "approver mechanics":
     check offApprover()(req, nullEm()).source == "off"
     check grantKey("shell", %*{"command": "ls   -la"}) == grantKey("shell", %*{"command": "ls -la"})
     check c[] == 0
+
+suite "ASK resolution order: latched mandate, then approver, then fail closed":
+  proc spec(name: string): ToolSpec =
+    ToolSpec(capability: Capability(name: name, realm: erInProcess, maxEffect: b2BroadWorkspace),
+      description: "t", parameters: %*{"type": "object"},
+      effectOf: proc(args: JsonNode): EffectClass = b1LocalReversible,
+      run: proc(args: JsonNode; cfg: AgentConfig): ToolResult =
+        ToolResult(ok: true, output: "ran " & name, exitCode: 0))
+
+  proc chainCfg(name: string): AgentConfig =
+    result = baseConfig()
+    result.cwd = freshWs(name)
+    result.askEnabled = true
+    result.askFrom = b1LocalReversible
+    result.mandates = true
+
+  proc policies(kinds: seq[string]; ps: seq[JsonNode]): seq[string] =
+    for i, k in kinds:
+      if k == "policy.decision": result.add ps[i]["policy"].getStr
+
+  test "a latched mandate resolves the ASK without consulting the approver; an uncovered tool reaches it":
+    let cfg = chainCfg("chain")
+    let store = newLatchStore(root / "chain-state" / "mandates.jsonl")
+    discard store.grant(scopeJson("test goal", @["covered"], b1LocalReversible, 5, 600), "operator:test")
+    var reg = initOrderedTable[string, ToolSpec]()
+    reg["covered"] = spec("covered"); reg["other"] = spec("other")
+    let script = @[
+      ModelAction(kind: makToolCalls, calls: @[ToolCall(id: "1", name: "covered", args: %*{})]),
+      ModelAction(kind: makToolCalls, calls: @[ToolCall(id: "2", name: "other", args: %*{})]),
+      ModelAction(kind: makFinal, text: "ok")]
+    var asked = new int
+    var kinds: seq[string]; var ps: seq[JsonNode]
+    let kp = addr kinds; let pp = addr ps
+    let sink: EventSink = proc(k: string; p: JsonNode) = (kp[].add k; pp[].add p)
+    let jpath = root / "chain-state" / "j.jsonl"; removeFile(jpath)
+    let r = waitFor runAgent(newScriptedProvider(script), "t", cfg, registry = reg, sink = sink,
+                             journal = openJournal(jpath), latch = store,
+                             approver = fixedApprover(aaOnce, asked))
+    check asked[] == 1                                   # only the uncovered call was asked about
+    let pol = policies(kinds, ps)
+    check pol.len == 2 and pol[0].startsWith("mandate:") and pol[1] == "approval.user"
+    check r.messages[3].content == "ran covered" and r.messages[5].content == "ran other"
+
+  test "with no latch and no approver the ASK still fails closed":
+    let cfg = chainCfg("chain2")
+    var reg = initOrderedTable[string, ToolSpec]()
+    reg["other"] = spec("other")
+    let script = @[ModelAction(kind: makToolCalls, calls: @[ToolCall(id: "1", name: "other", args: %*{})]),
+                   ModelAction(kind: makFinal, text: "ok")]
+    let jpath = root / "chain-state" / "j2.jsonl"; removeFile(jpath)
+    let r = waitFor runAgent(newScriptedProvider(script), "t", cfg, registry = reg, journal = openJournal(jpath))
+    check r.messages[3].content.startsWith("DENIED by approval: ASK unanswered")

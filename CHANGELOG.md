@@ -35,8 +35,40 @@
   `approval.ignored`, `todo.update`, optional `tool.result.preview`.
 - Found by the new tests: capturing the loop variable in the tool registry made
   every file tool report effect B0 and skip the journal. Fixed and pinned by a test.
-- Tests: `tests/test_m2.nim` (28 tests; 12 mutants verified to fail them) and
+- Tests: `tests/test_m2.nim` (30 tests; 12 mutants verified to fail them) and
   integration checks 8-9 using the new scripted `tests/fake_script.py`.
+
+## Unreleased — commitment latch (M2 groundwork)
+
+Scoped, durable operator mandates that resolve ASK approvals, so an agent can
+run unattended on one approval and the record shows it stayed inside it.
+Design rationale: Lanz et al., *Nature* 2026, split attractor gating.
+
+- **New:** `src/malyutka/latch.nim` (mandate log, strict decoder, hash chain,
+  scopes, budgets, TTL), `malyutka mandate` command, `propose_mandate` tool,
+  `--ask-from`, `--mandates`, `--scope-miss-limit`, exit code 7.
+- **Policy:** new `approval` layer in `defaultLayers()`; it is inert unless
+  `--ask-from` is given, so existing behaviour is unchanged.
+- **Invariants:** L1–L5 added to ARCHITECTURE.md, all enforced. (The design
+  doc's I12–I16 numbering was dropped: invariant 12 already exists.)
+- **Tests:** `tests/test_latch.nim` (26), integration section 8 (4).
+  106 offline + 21 integration pass on Nim 1.6.14, as root and unprivileged.
+  Mutation results in ARCHITECTURE.md.
+- **Not yet done:** live-model run (worlock/calisota), Nim 2.x (CI), and an
+  interactive approver for ASKs a mandate does not cover.
+- **Fix in passing:** `mandate` with no options no longer falls through
+  `getopt(@[])` to the real command line.
+
+## M1.2 certified — 2026-10-07 (kernel v0.3.4, unchanged)
+
+`tests/m12-certify.sh` passed with full live coverage on `calisota`: Ubuntu
+22.04.5, kernel 6.8, Nim 2.2.12, bubblewrap 0.6.1, Ollama with
+`qwen3.5:27b`, unprivileged user. FAIL=0, NOT_RUN=0, GAP=0.
+- The certified kernel and certifier hashes match `v0.3.4` and `main`.
+- Scope, including what remains open (24.04 with the AppArmor restriction
+  active; vLLM; other models), is recorded in
+  `docs/certification/M1.2-calisota-20261007.md`.
+
 
 ## 0.3.4 certification tooling, revision 2 (kernel unchanged)
 

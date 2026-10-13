@@ -1,5 +1,5 @@
 import std/[json, os, strutils]
-import ./types
+import ./[types, latch]
 
 proc parseTheme*(s: string): Theme =
   case s.toLowerAscii
@@ -48,3 +48,8 @@ proc loadConfig*(path: string; base = defaultConfig()): AgentConfig =
   if j.hasKey("repeatLimit"): result.repeatLimit = j["repeatLimit"].getInt
   if j.hasKey("requestTimeoutSec"): result.requestTimeoutSec = j["requestTimeoutSec"].getInt
   if j.hasKey("theme"): result.theme = parseTheme(j["theme"].getStr)
+  if j.hasKey("askFrom"):
+    result.askEnabled = true
+    result.askFrom = parseEffect(j["askFrom"].getStr)
+  if j.hasKey("mandates"): result.mandates = j["mandates"].getBool
+  if j.hasKey("scopeMissLimit"): result.scopeMissLimit = j["scopeMissLimit"].getInt
