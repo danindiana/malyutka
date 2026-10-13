@@ -86,9 +86,14 @@ could violate it; the column names the milestone that must enforce it.
 | 11 | Repeated unsuccessful cognition eventually halts | partial: identical-call halt + `maxSteps`; similarity-based R_t is M7 | I11 |
 | 12 | Recovery claims never exceed what was journaled | enforced in its present form: an action with `started` and no `outcome` is UNKNOWN_OUTCOME and never re-executed. Acknowledging it does not mark it resolved; only an explicit `reconcile` does. There is no undo | J6, J15, J16, integration 3–5b |
 | 13 | File tools cannot read or write outside the workspace | enforced: every path is walked component by component with `openat(2)` + `O_NOFOLLOW` from the workspace's own fd (no string path is re-resolved); absolute paths and `..` are refused lexically; writes are temp file + `renameat`. Residual: an operator-placed hard link is writable through | I13 (traversal, absolute, final/intermediate symlink, size/binary), mutants in `tests/test_m2.nim` header |
-| 14 | An approver can only upgrade ASK to ALLOW | enforced: the approver is consulted only on the ASK branch, so a DENY from any layer (including the hardline denylist) is final; unanswered, timed-out, EOF, malformed, wrong-action and raising approvers all deny; allowlist defects (mode, owner, symlink, checksum, schema) make the whole file untrusted | I14, approver mechanics, integration 9 |
+| 14 | An approver can only upgrade ASK to ALLOW | enforced: ASK is resolved in order: a latched mandate (L1-L5), then the approver, else fail closed. The approver is consulted only on the ASK branch, so a DENY from any layer (including the hardline denylist) is final; unanswered, timed-out, EOF, malformed, wrong-action and raising approvers all deny; allowlist defects (mode, owner, symlink, checksum, schema) make the whole file untrusted | I14, approver mechanics, integration 9 |
 | 15 | Resume never re-executes: a resumed session only rebuilds the message list | enforced: history is validated (`validateTranscript`) and loaded as inert messages; no journal record is written for it and no file is touched; the system prompt is rebuilt, never inherited; resume is refused while the session's lineage has an unresolved (UNKNOWN_OUTCOME / OWNER_STATUS_UNKNOWN / IN_PROGRESS) action unless `--resume-despite-unknown`. Sessions are decoded strictly (schema, roles, ids, no symlinks) | I15, session strictness, integration 10 |
 | P | Every proposed tool call receives exactly one terminal result | enforced | completeness tests, protocol fuzz (2000 scripts) |
+| L1 | No mandate reaches LATCHED without an operator approval, journaled durably, whose digest matches the proposed scope; the model can propose but never approve or resume | enforced | L1 (6 tests), integration 8 |
+| L2 | A mandate only turns ASK into ALLOW: it never changes a DENY, never covers a tool or effect outside its scope, and never lifts an action above the capability ceiling | enforced | L2 (3 tests) |
+| L3 | Nothing reachable from the sandbox or the transcript can change a latched mandate: the log is disjoint from the workspace, and edits, deletions and rewrites are corruption that refuses runs | enforced against the sandbox; tampering by the operator's uid is *detected*, not prevented (CRC, not a keyed chain) | L3 (4 tests), integration 8 |
+| L4 | Revoke and suspend need no approval and take effect before the next policy decision; a use after revocation, expiry or exhaustion is corruption | enforced | L4 (3 tests), budget, TTL |
+| L5 | Every action a mandate allowed names that mandate in the journal decision record and in a durable `use` record written before the action is authorized | enforced | L5, write-ahead, integration 8 |
 
 Invariant **P** is new in 0.3.1. M1.1 violated it: a repetition halt in the
 middle of a multi-call turn returned with calls unanswered. That is the same
@@ -292,6 +297,60 @@ Both versions existed only on test machines; move such a journal aside
 
 Operator records are appended; history is never rewritten.
 
+## Commitment latch
+
+`latch.nim`. Opt-in: `--ask-from:Bn` adds an approval layer that turns ALLOW
+into ASK for effects at or above `Bn`; `--mandates` attaches the mandate log
+so that a latched mandate can resolve those ASKs. Without both, behaviour is
+unchanged, and an ASK with no mandate still fails closed (I2c).
+
+**Where it sits.** After `policy.compose`, before the fail-closed ASK rule:
+
+```
+intent (journal) -> compose -> [ASK and latch] tryUse -> decision (journal) -> started -> run
+```
+
+`tryUse` finds the first LATCHED mandate covering `(tool, effect)` and appends
+its `use` record, fdatasync'd, inside the same locked transaction that checked
+the state. Only then is the decision ALLOW, with `policy = mandate:<id>`. If
+the record is not durable, the ASK stands and fails closed.
+
+**States.** PROPOSED -> (operator approve) LATCHED -> SUSPENDED / REVOKED;
+EXPIRED and EXHAUSTED are *derived* from the approval time, TTL and count of
+`use` records, so they cannot be undone by any record. SUSPENDED -> LATCHED
+needs the operator (`--resume`).
+
+**Deviation.** While any mandate is latched, `--scope-miss-limit` (default 3)
+consecutive ASKs that no mandate covers suspend every latched mandate. This is
+deliberately crude; the M7 metacritic is its intended successor.
+
+**Log.** `<state>/mandates.jsonl`, one record per line, framed like the
+journal. Records: `propose`, `approve`, `use`, `suspend`, `resume`, `revoke`.
+Each carries `n` (1, 2, 3 ... in file order), `prev` (CRC of the previous
+record), `t` (epoch seconds) and `crc`. Every write is read-validate-append
+under one exclusive flock, so concurrent runs and operator commands serialize.
+Decoding is strict like the journal's: unparseable lines are TORN (benign),
+anything else that fails schema, CRC, sequence, chain, digest or transition
+checks is CORRUPT and fails closed (`run` and `mandate` exit 7). The log is a
+separate file because the journal's decoder rightly treats unknown record
+types as corruption.
+
+**Design rationale.** Lanz et al., *Nature* 2026 (doi:10.1038/s41586-026-11144-9):
+in the fly fan-shaped body, PFG neurons track heading while hΔK neurons are
+held off by inhibition (FB5V); disinhibition switches on recurrence and locks
+the current heading in as a goal, recurrent weights outweigh compass input
+several-fold so the goal does not drift, and inhibition rises again on turns
+and deviation from the goal. The harness copies the structure only: content
+(proposal) separate from timing (approval), latched state dominant over
+ongoing input, fast close, slow open.
+
+**Limits.** `--unconfined-host` gives the model the operator's authority, so
+it could run `malyutka mandate --approve` itself; that is the waiver's
+existing meaning, not a latch defect. The operator identity is `$USER`, not a
+signature. Mandates survive across runs by design (they are meant to cover
+hours of work); a run that dies mid-action leaves its `use` record and the
+journal's UNKNOWN_OUTCOME, as for any action.
+
 ## Wire protocol (OpenAI-compatible)
 
 An assistant turn that requests tools is sent back as an assistant message
@@ -337,6 +396,14 @@ protection and confirming the test fails.
     The strict rule is kept for when transitions are relaxed (e.g.
     idempotent records).
 
+**Latch mutants.** 19 mutants of `latch.nim` and its hooks in `core.nim`
+were run against `tests/test_latch.nim`. 18 are caught; the first pass left
+three survivors, two of which were real gaps (proposal digest, model resume)
+and now have tests. One survives by design:
+- **Sequence check (`n == count+1`) removed:** the hash chain (`prev`) already
+  catches every deletion, duplication and reordering. The sequence check is
+  kept as defense in depth and for clearer error messages.
+
 **Self-matching process checks.** Process checks must not match their own
 command line. `pgrep -f`/`pkill -f`/awk patterns matched the shell running
 them, or the fake server's argv, four times in development (once killing the
@@ -376,6 +443,7 @@ certifier bugs all fail it.
 - `tests/test_core.nim`
 - `tests/test_invariants.nim`
 - `tests/test_adversarial.nim`
+- `tests/test_latch.nim`
 - `tests/integration.sh BIN` (CLI, strict provider, SIGKILL crash,
   journal placement and tampering)
 

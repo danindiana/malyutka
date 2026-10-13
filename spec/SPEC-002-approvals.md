@@ -17,6 +17,9 @@ LLM-judged "smart" approval; per-user pairing; remote approval channels.
 3. existing layers (`capability.ceiling`, `confinement`, `heuristic.denylist`) unchanged.
 Lowest verdict still wins; DENY short-circuits.
 
+## Resolution order
+ASK is resolved by (1) a latched mandate (`latch.nim`, operator pre-approval with scope, budget and TTL), then (2) the approver below, else (3) it fails closed. Neither can touch a DENY.
+
 ## Approver
 `--approvals:deny` (default, today's behaviour) · `stdin` · `tty` · `off` (requires `--i-know-approvals-off`).
 Answers: `once`, `session`, `always`, `deny`.
