@@ -14,7 +14,9 @@ pub enum Item {
         ok: Option<bool>,
         t0: Instant,
         secs: Option<f32>,
+        preview: String,
     },
+    Todo(Vec<(String, String)>), // (status, text)
     Note(String),
     Warn(String),
     Err(String),
@@ -27,8 +29,26 @@ pub struct Config {
     pub model: String,
     pub base_url: String,
     pub allow_shell: bool,
+    pub allow_files: bool,
+    pub allow_memory: bool,
+    pub personality: String,
     pub verbose: bool,
     pub statusbar: bool,
+}
+
+pub struct Approval {
+    pub action: String,
+    pub tool: String,
+    pub args: String,
+    pub reason: String,
+    pub policy: String,
+    pub deadline: Instant,
+}
+
+pub struct Turn {
+    pub run_id: String,
+    pub prompt: String,
+    pub item_start: usize,
 }
 
 pub struct Picker {
@@ -54,6 +74,10 @@ pub struct SkinPick {
 }
 
 pub struct App {
+    pub approval: Option<Approval>,
+    pub session: Option<String>,
+    pub turns: Vec<Turn>,
+    pub cur_prompt: Option<(String, usize)>,
     pub skin_pick: Option<SkinPick>,
     pub picker: Option<Picker>,
     pub cfg: Config,
@@ -83,6 +107,10 @@ pub struct App {
 impl App {
     pub fn new(cfg: Config, skin: Skin, doctor: Vec<(String, String)>) -> App {
         App {
+            approval: None,
+            session: None,
+            turns: vec![],
+            cur_prompt: None,
             skin_pick: None,
             picker: None,
             cfg,
@@ -107,6 +135,67 @@ impl App {
             tick: 0,
             quit: false,
             ctrl_c_at: None,
+        }
+    }
+
+    /// Command line for `malyutka run`. The TUI always uses the stdin approval
+    /// channel so ASKs become a modal instead of a silent denial.
+    pub fn run_args(&self, task: &str) -> Vec<String> {
+        let mut args = vec![
+            "run".to_string(),
+            "--json".to_string(),
+            "--approvals:stdin".to_string(),
+        ];
+        for (k, v) in [
+            ("provider", &self.cfg.provider),
+            ("model", &self.cfg.model),
+            ("base-url", &self.cfg.base_url),
+            ("personality", &self.cfg.personality),
+        ] {
+            if !v.is_empty() {
+                args.push(format!("--{k}:{v}"));
+            }
+        }
+        for (on, flag) in [
+            (self.cfg.allow_shell, "--allow-shell"),
+            (self.cfg.allow_files, "--allow-files"),
+            (self.cfg.allow_memory, "--allow-memory"),
+        ] {
+            if on {
+                args.push(flag.to_string());
+            }
+        }
+        if let Some(id) = &self.session {
+            args.push(format!("--resume:{id}"));
+        }
+        // A leading '-' would be parsed as an option by the harness.
+        args.push(if task.starts_with('-') {
+            format!("Task: {task}")
+        } else {
+            task.to_string()
+        });
+        args
+    }
+
+    /// Drops the last completed turn (transcript items and resume point).
+    /// Returns its prompt. The TUI never edits session files: the previous
+    /// run is simply resumed again.
+    pub fn undo_turn(&mut self) -> Option<String> {
+        let t = self.turns.pop()?;
+        self.items.truncate(t.item_start);
+        self.session = self.turns.last().map(|t| t.run_id.clone());
+        self.scroll = 0;
+        Some(t.prompt)
+    }
+
+    pub fn answer_approval(&mut self, answer: &str) {
+        if let Some(a) = self.approval.take() {
+            let line = serde_json::json!({"action": a.action, "answer": answer}).to_string();
+            let sent = self.run.as_ref().is_some_and(|h| h.send_line(&line));
+            if !sent {
+                self.items
+                    .push(Item::Warn("could not reach the harness to answer".into()));
+            }
         }
     }
 
@@ -141,6 +230,20 @@ impl App {
             }
             Msg::Exit(code) => {
                 self.run = None;
+                self.approval = None;
+                // A turn counts (and becomes the resume point) when it ended cleanly.
+                if matches!(code, Some(0) | Some(4)) && !self.run_id.is_empty() {
+                    if let Some((prompt, item_start)) = self.cur_prompt.take() {
+                        self.turns.push(Turn {
+                            run_id: self.run_id.clone(),
+                            prompt,
+                            item_start,
+                        });
+                        self.session = Some(self.run_id.clone());
+                    }
+                } else {
+                    self.cur_prompt = None;
+                }
                 match code {
                     Some(0) => {}
                     Some(c) if self.stopped => {
@@ -177,6 +280,7 @@ impl App {
                     ok: None,
                     t0: Instant::now(),
                     secs: None,
+                    preview: String::new(),
                 });
             }
             "policy.decision" => {
@@ -215,8 +319,90 @@ impl App {
                 if e.payload.get("timedOut").and_then(|v| v.as_bool()) == Some(true) {
                     s.push_str(" TIMEOUT");
                 }
+                let preview = e.s("preview");
                 self.finish_tool(s, code == 0);
+                if !preview.is_empty() {
+                    if let Some(Item::Tool { preview: p, .. }) = self
+                        .items
+                        .iter_mut()
+                        .rev()
+                        .find(|i| matches!(i, Item::Tool { .. }))
+                    {
+                        *p = preview;
+                    }
+                }
             }
+            "approval.request" => {
+                let secs = e
+                    .payload
+                    .get("timeoutSec")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(300);
+                self.approval = Some(Approval {
+                    action: e.s("action"),
+                    tool: e.s("tool"),
+                    args: e
+                        .payload
+                        .get("args")
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    reason: e.s("reason"),
+                    policy: e.s("policy"),
+                    deadline: Instant::now() + std::time::Duration::from_secs(secs),
+                });
+            }
+            "approval.answer" => {
+                if self
+                    .approval
+                    .as_ref()
+                    .is_some_and(|a| a.action == e.s("action"))
+                {
+                    self.approval = None;
+                }
+                let ans = e.s("answer");
+                let src = e.s("source");
+                if src == "timeout" || src == "eof" {
+                    self.items
+                        .push(Item::Warn(format!("approval {ans} ({src})")));
+                } else {
+                    self.items
+                        .push(Item::Note(format!("approval: {ans} ({src})")));
+                }
+            }
+            "todo.update" => {
+                let list: Vec<(String, String)> = e
+                    .payload
+                    .get("items")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .map(|i| {
+                                let g = |k: &str| {
+                                    i.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
+                                };
+                                (g("status"), g("text"))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                match self
+                    .items
+                    .iter_mut()
+                    .rev()
+                    .find(|i| matches!(i, Item::Todo(_)))
+                {
+                    Some(Item::Todo(t)) => *t = list,
+                    _ => self.items.push(Item::Todo(list)),
+                }
+            }
+            "memory.updated" => self.items.push(Item::Note(format!(
+                "memory {} ({} bytes)",
+                e.s("op"),
+                e.payload.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0)
+            ))),
+            "session.failed" => self
+                .items
+                .push(Item::Warn(format!("session not saved: {}", e.s("reason")))),
             "tool.cancelled" => {
                 let s = format!("cancelled: {}", e.s("reason"));
                 self.finish_tool(s, false);
@@ -374,6 +560,9 @@ mod tests {
                 model: String::new(),
                 base_url: String::new(),
                 allow_shell: false,
+                allow_files: false,
+                allow_memory: false,
+                personality: String::new(),
                 verbose: false,
                 statusbar: true,
             },
@@ -459,6 +648,33 @@ mod tests {
 mod picker_tests {
     use super::*;
     use crate::ollama::Model;
+    use crate::skin::Skin;
+
+    fn app() -> App {
+        App::new(
+            Config {
+                bin: "malyutka".into(),
+                provider: String::new(),
+                model: String::new(),
+                base_url: String::new(),
+                allow_shell: false,
+                allow_files: false,
+                allow_memory: false,
+                personality: String::new(),
+                verbose: false,
+                statusbar: true,
+            },
+            Skin::by_name("default").unwrap(),
+            vec![],
+        )
+    }
+
+    fn ev(kind: &str, p: serde_json::Value) -> Event {
+        Event {
+            kind: kind.into(),
+            payload: p,
+        }
+    }
 
     #[test]
     fn picker_filters_case_insensitively() {
@@ -473,5 +689,106 @@ mod picker_tests {
             sel: 0,
         };
         assert_eq!(p.visible().len(), 1);
+    }
+
+    #[test]
+    fn run_args_include_resume_and_stdin_approvals() {
+        let mut a = app();
+        let base = a.run_args("hi");
+        assert!(base.contains(&"--approvals:stdin".to_string()));
+        assert!(!base.iter().any(|x| x.starts_with("--resume")));
+        a.session = Some("9M14-abcd".into());
+        a.cfg.allow_files = true;
+        a.cfg.personality = "concise".into();
+        let args = a.run_args("-weird task");
+        assert!(args.contains(&"--resume:9M14-abcd".to_string()));
+        assert!(args.contains(&"--allow-files".to_string()));
+        assert!(args.contains(&"--personality:concise".to_string()));
+        assert_eq!(args.last().unwrap(), "Task: -weird task");
+    }
+
+    #[test]
+    fn turns_resume_undo_and_retry_bookkeeping() {
+        let mut a = app();
+        // turn 1
+        a.items.push(Item::User("one".into()));
+        a.cur_prompt = Some(("one".into(), 0));
+        a.run_id = "R1".into();
+        a.on_msg(Msg::Exit(Some(0)));
+        assert_eq!(a.session.as_deref(), Some("R1"));
+        // turn 2
+        a.items.push(Item::Agent("a1".into()));
+        a.items.push(Item::User("two".into()));
+        a.cur_prompt = Some(("two".into(), 2));
+        a.run_id = "R2".into();
+        a.on_msg(Msg::Exit(Some(0)));
+        assert_eq!(a.session.as_deref(), Some("R2"));
+        assert_eq!(a.turns.len(), 2);
+        // undo drops turn 2 and resumes from R1
+        assert_eq!(a.undo_turn().as_deref(), Some("two"));
+        assert_eq!(a.items.len(), 2);
+        assert_eq!(a.session.as_deref(), Some("R1"));
+        // undo again: back to a fresh session
+        assert_eq!(a.undo_turn().as_deref(), Some("one"));
+        assert!(a.session.is_none() && a.items.is_empty());
+        assert!(a.undo_turn().is_none());
+    }
+
+    #[test]
+    fn failed_runs_do_not_move_the_resume_point() {
+        let mut a = app();
+        a.session = Some("R0".into());
+        a.cur_prompt = Some(("x".into(), 0));
+        a.run_id = "R9".into();
+        a.on_msg(Msg::Exit(Some(1)));
+        assert_eq!(a.session.as_deref(), Some("R0"));
+        assert!(a.turns.is_empty() && a.cur_prompt.is_none());
+    }
+
+    #[test]
+    fn approval_request_and_answer_events() {
+        let mut a = app();
+        a.on_event(ev(
+            "approval.request",
+            serde_json::json!({"action":"A1","tool":"shell","args":{"command":"x"},"reason":"force push","policy":"approval.dangerous","timeoutSec":300}),
+        ));
+        let ap = a.approval.as_ref().unwrap();
+        assert_eq!(ap.action, "A1");
+        assert_eq!(ap.tool, "shell");
+        // an answer for another action leaves the modal up
+        a.on_event(ev(
+            "approval.answer",
+            serde_json::json!({"action":"OTHER","answer":"deny","source":"operator"}),
+        ));
+        assert!(a.approval.is_some());
+        a.on_event(ev(
+            "approval.answer",
+            serde_json::json!({"action":"A1","answer":"deny","source":"timeout"}),
+        ));
+        assert!(a.approval.is_none());
+        assert!(matches!(a.items.last(), Some(Item::Warn(s)) if s.contains("timeout")));
+    }
+
+    #[test]
+    fn todo_updates_replace_in_place_and_preview_attaches_to_the_tool() {
+        let mut a = app();
+        a.on_event(ev(
+            "todo.update",
+            serde_json::json!({"items":[{"status":"pending","text":"a"}]}),
+        ));
+        a.on_event(ev("todo.update", serde_json::json!({"items":[{"status":"done","text":"a"},{"status":"pending","text":"b"}]})));
+        assert_eq!(a.items.len(), 1);
+        assert!(matches!(&a.items[0], Item::Todo(t) if t.len() == 2 && t[0].0 == "done"));
+        a.on_event(ev(
+            "tool.proposed",
+            serde_json::json!({"name":"patch","args":{}}),
+        ));
+        a.on_event(ev(
+            "tool.result",
+            serde_json::json!({"exitCode":0,"preview":"--- f\n- old\n+ new"}),
+        ));
+        assert!(
+            matches!(a.items.last(), Some(Item::Tool { preview, .. }) if preview.contains("+ new"))
+        );
     }
 }

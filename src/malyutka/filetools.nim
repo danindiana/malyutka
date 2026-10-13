@@ -157,10 +157,16 @@ proc optInt(args: JsonNode; key: string; default: int): int =
 proc errResult(e: ref CatchableError): ToolResult =
   ToolResult(ok: false, output: "ERROR: " & e.msg, exitCode: 1)
 
+proc bodyLines(s: string): seq[string] =
+  result = s.splitLines
+  if result.len > 0 and result[^1] == "": result.setLen(result.len - 1)
+
 proc diffPreview(path, old, new: string): string =
+  ## "- removed" / "+ added" lines, capped at 40. An empty side contributes nothing
+  ## (a new file shows only additions) and a trailing newline is not a blank line.
   var lines: seq[string]
-  for l in old.splitLines: lines.add "- " & l
-  for l in new.splitLines: lines.add "+ " & l
+  for l in bodyLines(old): lines.add "- " & l
+  for l in bodyLines(new): lines.add "+ " & l
   var shown = lines[0 ..< min(lines.len, 40)]
   if lines.len > 40: shown.add "… (" & $(lines.len - 40) & " more lines)"
   "--- " & path & "\n" & shown.join("\n")

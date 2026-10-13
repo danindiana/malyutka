@@ -1,7 +1,7 @@
 //! Spawns `malyutka run --json` and forwards its output as messages.
 use crate::events::{parse_line, Event};
-use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -15,9 +15,21 @@ pub enum Msg {
 
 pub struct Handle {
     child: Arc<Mutex<Child>>,
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
 }
 
 impl Handle {
+    /// Writes one line to the harness (the approval control channel).
+    pub fn send_line(&self, line: &str) -> bool {
+        match self.stdin.lock() {
+            Ok(mut g) => match g.as_mut() {
+                Some(w) => writeln!(w, "{line}").and_then(|_| w.flush()).is_ok(),
+                None => false,
+            },
+            Err(_) => false,
+        }
+    }
+
     pub fn kill(&self) {
         if let Ok(mut c) = self.child.lock() {
             let _ = c.kill();
@@ -28,10 +40,11 @@ impl Handle {
 pub fn spawn(bin: &str, args: &[String], tx: Sender<Msg>) -> std::io::Result<Handle> {
     let mut child = Command::new(bin)
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    let stdin = Arc::new(Mutex::new(child.stdin.take()));
     let out = child.stdout.take().expect("piped stdout");
     let err = child.stderr.take().expect("piped stderr");
     let child = Arc::new(Mutex::new(child));
@@ -51,6 +64,7 @@ pub fn spawn(bin: &str, args: &[String], tx: Sender<Msg>) -> std::io::Result<Han
         }
     });
     let c2 = Arc::clone(&child);
+    let stdin2 = Arc::clone(&stdin);
     thread::spawn(move || {
         let code = loop {
             let st = c2.lock().ok().and_then(|mut c| c.try_wait().ok().flatten());
@@ -59,12 +73,16 @@ pub fn spawn(bin: &str, args: &[String], tx: Sender<Msg>) -> std::io::Result<Han
             }
             thread::sleep(Duration::from_millis(40));
         };
+        // Closing stdin tells a still-waiting approver "EOF" (= deny).
+        if let Ok(mut g) = stdin2.lock() {
+            g.take();
+        }
         // Drain readers so no output is lost behind the Exit message.
         let _ = h_out.join();
         let _ = h_err.join();
         let _ = tx.send(Msg::Exit(code));
     });
-    Ok(Handle { child })
+    Ok(Handle { child, stdin })
 }
 
 /// Run a short command to completion and return stdout (used for doctor/journal).
