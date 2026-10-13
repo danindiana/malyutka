@@ -58,6 +58,8 @@ The name and the green/amber terminal themes are visual identity only (see
 
 ## Project status
 
+Design docs: [`docs/`](docs/README.md) (Hermes gap analysis, diagrams) · specs: [`spec/`](spec/README.md) · future work: [`todo/`](todo/README.md).
+
 **v0.3.4: M1 (guidance loop) complete; M1.2 (integration certification)
 passed on a real host**, with one configuration still open: Ubuntu 24.04
 with its AppArmor restriction active (see the table).

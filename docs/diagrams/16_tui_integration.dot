@@ -1,0 +1,24 @@
+digraph tuiint {
+    graph [bgcolor="#0d1117", fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20, rankdir=LR,
+           label="16 · TUI integration: read-only viewer, one process per task\noperator actions go through the CLI, never by editing state files\n ", nodesep=0.3, ranksep=0.6];
+    node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2, margin="0.22,0.14", fillcolor="#161b22", fontsize=12];
+    edge  [color="#8b949e", fontname="Helvetica", fontcolor="#adbac7", penwidth=1.5, arrowsize=0.85, fontsize=10];
+
+    op [label="Operator", shape=oval, color="#58a6ff", fillcolor="#13294d"];
+    subgraph cluster_t { label="malyutka-tui"; fontcolor="#d29922"; color="#d29922"; style="rounded";
+      ui [label="draw loop (120 ms tick)\ntranscript · spinner · status bar"];
+      app [label="App state\nitems · input · skin · config"];
+      rn [label="runner threads\nstdout JSONL · stderr · exit"];
+      pk [label="pickers\nmodel (Ollama) · skin"]; }
+    cli [label="malyutka run --json\n(child process, one per prompt)", color="#bc8cff", fillcolor="#2a1f45"];
+    ro [label="state dir (read-only)\nsessions/ · journal tail", shape=folder, color="#d29922", fillcolor="#2e2410"];
+    opcmd [label="malyutka journal\n--ack / --reconcile\n(locked transaction)", color="#3fb950"];
+    oll [label="Ollama /api/tags", color="#58a6ff", fillcolor="#13294d"];
+    plan [label="planned: approval.request ⟶ modal ⟶ answer on child stdin;\n--resume <last run> for multi-turn", color="#d29922", style="filled,dashed"];
+
+    op -> ui; ui -> app; app -> rn; rn -> cli [label="spawn / kill"]; cli -> rn [label="JSONL events"];
+    rn -> app [label="Msg::Ev / Stderr / Exit"];
+    pk -> oll [style=dashed]; app -> pk; app -> ro [style=dashed, label="/history /journal"];
+    op -> opcmd [style=dashed, label="manual, outside TUI"];
+    cli -> plan [style=dashed, dir=both, color="#d29922"];
+}

@@ -1,0 +1,38 @@
+digraph architecture {
+    graph [bgcolor="#0d1117", fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20, rankdir=LR,
+           label="09 · Architecture: modules and processes\n ", nodesep=0.3, ranksep=0.6];
+    node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2, margin="0.22,0.14", fillcolor="#161b22", fontsize=12];
+    edge  [color="#8b949e", fontname="Helvetica", fontcolor="#adbac7", penwidth=1.5, arrowsize=0.85, fontsize=10];
+
+    user [label="Operator", shape=oval, color="#58a6ff", fillcolor="#13294d"];
+    subgraph cluster_tui {
+        label="tui/ (Rust · ratatui) — separate crate"; fontcolor="#d29922"; color="#d29922"; style="rounded,dashed";
+        tui [label="malyutka-tui\nbanner · transcript · skins\nmodel & skin pickers\nslash commands"];
+        runner [label="runner.rs\nspawn child · parse JSONL\nkill on Ctrl+C"];
+        ollama_c [label="ollama.rs\nGET /api/tags"];
+    }
+    subgraph cluster_h {
+        label="malyutka (Nim) — trusted harness process"; fontcolor="#bc8cff"; color="#bc8cff"; style="rounded,dashed";
+        cli [label="malyutka.nim\nCLI: run · doctor · journal", color="#58a6ff"];
+        core [label="core.nim\nguidance loop\nvalidateTranscript", color="#3fb950"];
+        provider [label="provider.nim\nmock · OpenAI-compatible", color="#58a6ff"];
+        tools [label="tools.nim\nregistry · ToolSpec", color="#3fb950"];
+        policy [label="policy.nim\ncompose · layers", color="#3fb950"];
+        journal [label="journal.nim\nWAL · CRC · flock liveness", color="#d29922"];
+        session [label="session.nim\ntranscript JSON", color="#d29922"];
+        events [label="events.nim\nJSONL + console sinks", color="#39c5cf"];
+        sandbox [label="sandbox.nim\nbwrap broker · workspace fd", color="#f0883e"];
+    }
+    bwrap [label="bwrap child\n/bin/sh -c cmd\ntmpfs root · ws rw", color="#f0883e", fillcolor="#3a2210"];
+    model [label="Model server\nOllama · vLLM · OpenAI", color="#58a6ff", fillcolor="#13294d"];
+    state [label="State dir\njournal.jsonl · runs/*.lock\nsessions/*.json", shape=folder, color="#d29922", fillcolor="#2e2410"];
+    ws [label="Workspace dir", shape=folder, color="#f0883e", fillcolor="#3a2210"];
+
+    user -> tui; tui -> runner; tui -> ollama_c; ollama_c -> model [label="HTTP", style=dashed];
+    runner -> cli [label="spawn --json\nstdout JSONL"];
+    cli -> core; core -> provider -> model [label="POST /v1/chat/completions"];
+    core -> tools; core -> policy; core -> journal; core -> session; core -> events;
+    tools -> sandbox -> bwrap; bwrap -> ws [label="rw bind-fd"];
+    journal -> state; session -> state;
+    tui -> state [label="read-only\n/history /journal", style=dashed, color="#d29922"];
+}

@@ -1,0 +1,35 @@
+digraph lessons {
+    graph [bgcolor="#0d1117", fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20, rankdir=LR,
+           label="14 · Lessons learned: failure → fix → standing test\nfrom the 0.3.1 → 0.3.4 history and the M1.2 certification tooling\n ", nodesep=0.22, ranksep=0.5];
+    node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2, margin="0.22,0.14", fillcolor="#161b22", fontsize=12];
+    edge  [color="#8b949e", fontname="Helvetica", fontcolor="#adbac7", penwidth=1.5, arrowsize=0.85, fontsize=10];
+
+    subgraph cluster_k { label="Kernel claims that were wrong"; fontcolor="#f85149"; color="#f85149"; style="rounded";
+      k1 [label="0.3.1: ro-bind of / claimed 'no secret reads'\n~/.ssh and docker.sock were reachable", color="#f85149", fillcolor="#3a1518"];
+      k1f [label="Fix: empty tmpfs root + allowlisted ro binds\ntest: adversarial escape attempts", color="#3fb950"];
+      k2 [label="0.3.1: repetition halt left tool calls unanswered\n(protocol invalid)", color="#f85149", fillcolor="#3a1518"];
+      k2f [label="Fix: cancel remaining calls with replies\ntest P: 2000 fuzz scripts, one terminal reply each", color="#3fb950"];
+      k1 -> k1f; k2 -> k2f; }
+    subgraph cluster_j { label="Journal bugs (0.3.2 / 0.3.3)"; fontcolor="#d29922"; color="#d29922"; style="rounded";
+      j1 [label="torn fragment swallowed the next record", color="#d29922"];
+      j2 [label="records without crc accepted", color="#d29922"];
+      j3 [label="sorted sequence check let replays through", color="#d29922"];
+      j4 [label="operator writer ids collided; reconcile raced", color="#d29922"];
+      jf [label="Fix: newline framing, mandatory crc, per-writer n == last+1,\ntransact under one exclusive lock\ntests J2–J17 + 6-operator race in integration.sh", color="#3fb950"];
+      j1 -> jf; j2 -> jf; j3 -> jf; j4 -> jf; }
+    subgraph cluster_l { label="Liveness"; fontcolor="#39c5cf"; color="#39c5cf"; style="rounded";
+      l1 [label="0.3.3: every lock failure read as 'dead'", color="#39c5cf"];
+      lf [label="0.3.4: ALIVE / DEAD / UNKNOWN; unknown stays unresolved", color="#3fb950"];
+      l1 -> lf; }
+    subgraph cluster_t { label="Test-writing pitfalls"; fontcolor="#bc8cff"; color="#bc8cff"; style="rounded";
+      t1 [label="vacuous test: cat blocked on stdin\nbefore reaching the leaked fd", color="#bc8cff"];
+      t2 [label="pgrep/pkill -f and awk patterns matched themselves\n(once killed the test shell)", color="#bc8cff"];
+      t3 [label="fixed /tmp names broke root + non-root runs", color="#bc8cff"];
+      t4 [label="certifier auto-reconciled, against the uncertainty model;\nSIGKILL fired before 'started' was durable", color="#bc8cff"];
+      tf [label="Rules: every test needs a mutant that fails it;\nunique temp dirs; never self-matching patterns;\nnever auto-resolve uncertainty", color="#3fb950"];
+      t1 -> tf; t2 -> tf; t3 -> tf; t4 -> tf; }
+    subgraph cluster_r { label="Release hygiene"; fontcolor="#58a6ff"; color="#58a6ff"; style="rounded";
+      r1 [label="0.3.1–0.3.3 archives shipped a compiled test binary", color="#58a6ff"];
+      rf [label="Fix: tools/release.sh refuses ELF files;\n.gitignore + CI release-hygiene job", color="#3fb950"];
+      r1 -> rf; }
+}

@@ -1,0 +1,36 @@
+digraph disk {
+    graph [bgcolor="#0d1117", fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20, rankdir=LR,
+           label="11 · Disk handling: who may touch what\nstate dir and workspace must be disjoint — the model can never reach its own journal\n ", nodesep=0.3, ranksep=0.6];
+    node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2, margin="0.22,0.14", fillcolor="#161b22", fontsize=12];
+    edge  [color="#8b949e", fontname="Helvetica", fontcolor="#adbac7", penwidth=1.5, arrowsize=0.85, fontsize=10];
+
+    subgraph cluster_state {
+        label="$MALYUTKA_STATE_DIR  (default ~/.local/state/malyutka)"; fontcolor="#d29922"; color="#d29922"; style="rounded";
+        journal [label="journal.jsonl\nO_APPEND|O_NOFOLLOW · 0600\nrecords: \\n json crc \\n\nfdatasync per record", shape=note, color="#d29922", fillcolor="#2e2410"];
+        locks [label="runs/<writer>.lock\nflock = liveness\nkernel drops lock on death\nnever deleted (GC deferred)", shape=note, color="#d29922", fillcolor="#2e2410"];
+        sessions [label="sessions/<run>.json\nwritten ONCE at run end today\n(planned: atomic per step)", shape=note, color="#d29922", fillcolor="#2e2410"];
+        planned [label="planned: allowlist.json · memory.md · SOUL.md\n0600 · O_NOFOLLOW · strict decode", shape=note, color="#d29922", style="filled,dashed"];
+    }
+    subgraph cluster_ws {
+        label="Workspace (operator chosen; not /, $HOME, ancestors, system dirs, /run /proc /sys /dev)"; fontcolor="#f0883e"; color="#f0883e"; style="rounded";
+        wsdir [label="workspace/\nrealpath → O_PATH|O_NOFOLLOW fd\nre-validated via /proc/self/fd", shape=folder, color="#f0883e", fillcolor="#3a2210"];
+    }
+    subgraph cluster_box {
+        label="bwrap view (what the sandboxed shell sees)"; fontcolor="#3fb950"; color="#3fb950"; style="rounded";
+        root [label="/ = empty tmpfs", color="#3fb950"];
+        ro [label="read-only: /usr /bin /sbin /lib* /etc /opt\n(symlinks recreated)", color="#3fb950"];
+        devs [label="--dev /dev · --proc /proc · --tmpfs /tmp", color="#3fb950"];
+        wsrw [label="workspace rw via --bind-fd 3\nmounted AFTER /tmp", color="#3fb950"];
+    }
+    harness [label="Harness (trusted)", shape=oval, color="#bc8cff", fillcolor="#2a1f45"];
+    model_proc [label="Sandboxed command\n(untrusted)", shape=oval, color="#f85149", fillcolor="#3a1518"];
+    tui [label="TUI\nread-only", shape=oval, color="#58a6ff", fillcolor="#13294d"];
+    secrets [label="NOT visible: $HOME, ~/.ssh,\ndocker.sock, journal, MALYUTKA_API_KEY\n(lesson from 0.3.1)", color="#f85149", fillcolor="#3a1518"];
+
+    harness -> journal [label="append"]; harness -> locks [label="flock"]; harness -> sessions [label="write"];
+    harness -> wsdir [label="open fd"];
+    wsdir -> wsrw [style=dashed]; root -> ro -> devs -> wsrw [style=invis];
+    model_proc -> wsrw [label="read/write"]; model_proc -> ro [label="read"];
+    model_proc -> secrets [label="blocked", color="#f85149", style=dashed];
+    tui -> sessions [style=dashed, label="list"]; tui -> journal [style=dashed, label="tail"];
+}
