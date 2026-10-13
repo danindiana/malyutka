@@ -47,7 +47,14 @@ impl Picker {
     }
 }
 
+pub struct SkinPick {
+    pub skins: Vec<Skin>,
+    pub sel: usize,
+    pub orig: Skin,
+}
+
 pub struct App {
+    pub skin_pick: Option<SkinPick>,
     pub picker: Option<Picker>,
     pub cfg: Config,
     pub skin: Skin,
@@ -76,6 +83,7 @@ pub struct App {
 impl App {
     pub fn new(cfg: Config, skin: Skin, doctor: Vec<(String, String)>) -> App {
         App {
+            skin_pick: None,
             picker: None,
             cfg,
             skin,

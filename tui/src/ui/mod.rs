@@ -133,6 +133,56 @@ fn draw_picker(f: &mut Frame, app: &App, p: &crate::app::Picker, area: Rect) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+fn draw_skin_pick(f: &mut Frame, app: &App, p: &crate::app::SkinPick, area: Rect) {
+    let s = &app.skin;
+    let w = area.width.min(64);
+    let h = (p.skins.len() as u16 + 3).min(area.height);
+    let r = Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    );
+    f.render_widget(Clear, r);
+    let block = Block::bordered()
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::default().fg(s.border))
+        .title(Span::styled(
+            " Select skin (live preview) ",
+            Style::default().fg(s.title).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(s.menu_bg));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    let rows = inner.height.saturating_sub(1) as usize;
+    let top = p.sel.saturating_sub(rows.saturating_sub(1));
+    let mut lines = vec![];
+    for (i, k) in p.skins.iter().enumerate().skip(top).take(rows) {
+        let bg = if i == p.sel { s.menu_sel } else { s.menu_bg };
+        let cur = if k.name == p.orig.name { "●" } else { " " };
+        let sw = |col| Span::styled("██", Style::default().fg(col).bg(bg));
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {cur} "), Style::default().fg(s.ok).bg(bg)),
+            Span::styled(
+                format!("{:<10}", k.name),
+                Style::default().fg(s.title).bg(bg),
+            ),
+            sw(k.bg),
+            sw(k.border),
+            sw(k.title),
+            sw(k.accent),
+            sw(k.ok),
+            sw(k.error),
+            Span::styled(format!(" {}", k.desc), Style::default().fg(s.dim).bg(bg)),
+        ]));
+    }
+    lines.push(Line::styled(
+        " ↑↓ preview · Enter apply · Esc cancel",
+        Style::default().fg(s.dim),
+    ));
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     let s = &app.skin;
     let area = f.area();
@@ -184,7 +234,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     if sb == 1 {
         let txt = status_text(app, area.width as usize);
         f.render_widget(
-            Paragraph::new(txt).style(Style::default().fg(s.dim).bg(Color::Rgb(0x10, 0x10, 0x20))),
+            Paragraph::new(txt).style(Style::default().fg(s.dim).bg(s.bar_bg)),
             chunks[2],
         );
     }
@@ -227,6 +277,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         ia.y + 1 + row,
     ));
 
+    if let Some(p) = &app.skin_pick {
+        draw_skin_pick(f, app, p, area);
+    }
     if let Some(p) = &app.picker {
         draw_picker(f, app, p, area);
     }
@@ -348,6 +401,22 @@ mod tests {
         let s = render(&a, 100, 30);
         assert!(s.contains("Select model"));
         assert!(s.contains("qwen3.5:27b") && s.contains("gemma4:12b"));
+    }
+
+    #[test]
+    fn renders_skin_picker_for_every_skin() {
+        for sk in Skin::all() {
+            let mut a = app();
+            a.skin = sk.clone();
+            a.skin_pick = Some(crate::app::SkinPick {
+                skins: Skin::all(),
+                sel: 3,
+                orig: sk,
+            });
+            let s = render(&a, 100, 30);
+            assert!(s.contains("Select skin"));
+            assert!(s.contains("ares") && s.contains("daylight"));
+        }
     }
 
     #[test]

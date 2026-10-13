@@ -6,7 +6,7 @@ mod runner;
 mod skin;
 mod ui;
 
-use app::{App, Config, Item, Picker};
+use app::{App, Config, Item, Picker, SkinPick};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use runner::Msg;
 use skin::Skin;
@@ -18,7 +18,7 @@ const HELP: &str = "malyutka-tui — Hermes-style terminal UI for the Malyutka (
 USAGE: malyutka-tui [OPTIONS]
 
   --malyutka-bin <path>   malyutka executable (default: $MALYUTKA_BIN, ./malyutka, then PATH)
-  --skin <name>           default | warsaw | nato | mono
+  --skin <name>           one of the built-ins (see /skin in the app)
   --provider <name>       mock | openai | ollama | vllm
   --model <name>
   --base-url <url>
@@ -174,6 +174,18 @@ fn run_command(app: &mut App, line: &str) {
                 }
             ));
         }
+        "/skin" | "/skins" if arg.is_empty() => {
+            let skins = Skin::all();
+            let sel = skins
+                .iter()
+                .position(|s| s.name == app.skin.name)
+                .unwrap_or(0);
+            app.skin_pick = Some(SkinPick {
+                skins,
+                sel,
+                orig: app.skin.clone(),
+            });
+        }
         "/skin" => match Skin::by_name(arg) {
             Some(s) => app.skin = s,
             None => app.note(format!("skins: {}", skin::NAMES.join(", "))),
@@ -246,6 +258,40 @@ fn open_picker(app: &mut App) {
     }
 }
 
+/// Skin selector: moving the highlight previews the skin live; Esc restores.
+fn skin_key(app: &mut App, k: KeyEvent) {
+    let Some(p) = app.skin_pick.as_mut() else {
+        return;
+    };
+    let n = p.skins.len();
+    match k.code {
+        KeyCode::Up => p.sel = (p.sel + n - 1) % n,
+        KeyCode::Down => p.sel = (p.sel + 1) % n,
+        KeyCode::Home => p.sel = 0,
+        KeyCode::End => p.sel = n - 1,
+        KeyCode::Esc => {
+            let orig = p.orig.clone();
+            app.skin_pick = None;
+            app.skin = orig;
+            return;
+        }
+        KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+            let orig = p.orig.clone();
+            app.skin_pick = None;
+            app.skin = orig;
+            return;
+        }
+        KeyCode::Enter => {
+            let name = p.skins[p.sel].name;
+            app.skin_pick = None;
+            app.note(format!("skin = {name}"));
+            return;
+        }
+        _ => {}
+    }
+    app.skin = p.skins[p.sel].clone();
+}
+
 fn pick_key(app: &mut App, k: KeyEvent) {
     let Some(p) = app.picker.as_mut() else { return };
     let n = p.visible().len();
@@ -311,6 +357,9 @@ fn on_key(app: &mut App, k: KeyEvent, tx: &Sender<Msg>) {
     if k.kind != KeyEventKind::Press {
         return;
     }
+    if app.skin_pick.is_some() {
+        return skin_key(app, k);
+    }
     if app.picker.is_some() {
         return pick_key(app, k);
     }
@@ -345,6 +394,7 @@ fn on_key(app: &mut App, k: KeyEvent, tx: &Sender<Msg>) {
                 app.delete();
             }
         }
+        KeyCode::F(2) => run_command(app, "/skin"),
         KeyCode::Char('j') if ctrl => app.insert('\n'),
         KeyCode::Char('u') if ctrl => app.clear_input(),
         KeyCode::Char('w') if ctrl => app.delete_word(),
