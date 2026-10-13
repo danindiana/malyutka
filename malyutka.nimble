@@ -11,3 +11,4 @@ task test, "Run tests":
   exec "nim c -r --hints:off --path:src tests/test_invariants.nim"
   exec "nim c -r --hints:off --path:src tests/test_adversarial.nim"
   exec "nim c -r --hints:off --path:src tests/test_m2.nim"
+  exec "nim c -r --hints:off --path:src tests/test_latch.nim"

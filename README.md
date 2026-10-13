@@ -7,7 +7,7 @@
 [![Platform](https://img.shields.io/badge/platform-linux-informational?logo=linux&logoColor=white)](#requirements)
 [![Sandbox](https://img.shields.io/badge/sandbox-bubblewrap-3fb950)](#the-sandbox)
 [![Version](https://img.shields.io/github/v/tag/danindiana/malyutka?label=version&color=d29922)](CHANGELOG.md)
-[![Milestone](https://img.shields.io/badge/M1.2-certified%20(Ollama)-3fb950)](#project-status)
+[![Milestone](https://img.shields.io/badge/M1.2-certified%20(Ubuntu%2022.04)-3fb950)](docs/certification/M1.2-calisota-20261007.md)
 
 **A small, Linux-native, model-neutral agent harness written in Nim, built so
 that a recoverable model mistake cannot become an unrecoverable systems
@@ -60,18 +60,18 @@ The name and the green/amber terminal themes are visual identity only (see
 
 Design docs: [`docs/`](docs/README.md) (Hermes gap analysis, diagrams) · specs: [`spec/`](spec/README.md) · future work: [`todo/`](todo/README.md).
 
-**v0.4.0: M1 (guidance loop) complete, M2 file tools and approvals added; M1.2 (integration certification)
-certified on the maintainer's host (2026-10-11, Ollama `qwen3.5:27b`); vLLM and
-Ubuntu 24.04's AppArmor configuration still uncertified.**
+**v0.4.0: M1 (guidance loop) complete; M2 file tools, ASK approvals and the commitment latch added; M1.2 (integration certification)
+passed on a real host**, with one configuration still open: Ubuntu 24.04
+with its AppArmor restriction active (see the table).
 
 | Evidence | Status |
 |---|---|
-| Offline suites: 108 unit/invariant/adversarial + 28 CLI integration | pass on Nim 2.2.12 locally for 0.4.0; the Nim 1.6.14 matrix runs in CI |
+| Offline suites: 136 unit/invariant/adversarial/latch + 32 CLI integration | pass on Nim 2.2.12 locally for 0.4.0; the Nim 1.6.14 matrix runs in CI |
 | Native Nim 2.x build and tests | pass on CI (Nim 2.2.x, ubuntu-24.04, unprivileged runner) |
 | Nim 2.2.4 semantic check (`nim check`) | 0 diagnostics in Malyutka sources |
-| Live Ollama tool-call round trips on a real host | pass: `m12-report-20261011-232806` (Ubuntu 22.04.5, Nim 2.2.12, bwrap 0.6.1, 0 failures) |
-| Live vLLM tool-call round trips | **pending**: optional suite not configured in that run |
-| bubblewrap under Ubuntu 24.04's real AppArmor configuration | **pending**: the certified run had `apparmor_restrict_unprivileged_userns=0` |
+| Live Ollama tool calling on a real host (qwen3.5:27b): single + multi-call, sandboxed shell, model-issued escape attempt, live SIGKILL + restart | **certified**: [record](docs/certification/M1.2-calisota-20261007.md) (Ubuntu 22.04, Nim 2.2.12, bwrap 0.6.1) |
+| vLLM | optional; not yet run live |
+| bubblewrap with Ubuntu 24.04's AppArmor userns restriction **active** | **untested**: the certification host and CI both run without it |
 
 Malyutka is early-stage research software. Its *defenses* are tested
 adversarially, and each test is checked by deliberately breaking the defense
@@ -159,6 +159,9 @@ malyutka doctor
 malyutka journal                     Journal health + actions with unknown outcome
 malyutka journal --reconcile:ID --as:completed|failed|not-executed
 malyutka journal --ack:ID            Mark it seen, outcome still unknown
+malyutka mandate                     Mandates and mandate-log health
+malyutka mandate --grant --tools:shell --max-effect:B2 --actions:N --ttl:SEC --goal:TEXT
+malyutka mandate --approve:ID [--digest:CRC] | --revoke:ID | --resume:ID
 ```
 
 | Option | Meaning |
@@ -179,6 +182,9 @@ malyutka journal --ack:ID            Mark it seen, outcome still unknown
 | `--theme:warsaw\|nato\|plain` | console theme: green phosphor, amber, or no colour |
 | `--json` | canonical JSONL events on stdout (for replay and metrics) |
 | `--config:PATH` | JSON config file (see `config.example.json`) |
+| `--ask-from:B0..B4` | approval layer: effects at or above this class ASK (off by default) |
+| `--mandates` | latched mandates may resolve ASKs; adds the `propose_mandate` tool |
+| `--scope-miss-limit:N` | uncovered ASKs in a row that suspend the latch (default 3; 0 = off) |
 
 **Environment:** `MALYUTKA_PROVIDER`, `MALYUTKA_MODEL`, `MALYUTKA_BASE_URL`,
 `MALYUTKA_API_KEY`, and `MALYUTKA_STATE_DIR` (journal and sessions; default
@@ -195,6 +201,7 @@ malyutka journal --ack:ID            Mark it seen, outcome still unknown
 | 4 | halted: `maxSteps` or repetition |
 | 5 | journal unavailable, misplaced or corrupt (`run`); unknown outcomes pending (`journal`) |
 | 6 | journal corrupt (`journal`) |
+| 7 | mandate log unavailable, misplaced or corrupt |
 
 ### Examples
 
@@ -322,6 +329,45 @@ cannot see it, so the agent cannot rewrite its own record.
 
 ---
 
+## The commitment latch
+
+Per-call approvals do not survive unattended work: operators either watch the
+terminal or switch approvals off. A **mandate** is one operator approval that
+resolves a bounded class of later ASKs: a set of tool names, an effect ceiling,
+an action budget and a TTL.
+
+```sh
+# Shell commands now need approval...
+./malyutka run --allow-shell --ask-from:B2 --mandates 'task'     # each shell call: DENIED (ASK unanswered)
+
+# ...granted once, for 20 actions over the next hour:
+./malyutka mandate --grant --tools:shell --max-effect:B2 --actions:20 --ttl:3600 \
+  --goal:'tidy the build directory'
+./malyutka run --allow-shell --ask-from:B2 --mandates 'task'     # POL [ALLOW] mandate:M-…
+```
+
+- **Content vs timing.** The model may draft a mandate (`propose_mandate`);
+  only the operator can latch it (`--approve`, bound to the digest of the
+  exact scope reviewed).
+- **Only ASK.** A mandate turns ASK into ALLOW and nothing else. It never
+  sees a DENY, and never lifts an action above its capability's ceiling.
+- **Protected.** The mandate log lives in the state directory, outside every
+  workspace. It is append-only, CRC-checked and hash-chained; a corrupt log
+  refuses runs (exit 7).
+- **Fast close.** Revoking never needs approval and takes effect before the
+  next decision. A streak of calls outside every latched mandate suspends
+  it; only the operator can resume. TTL and budget only run down.
+- **Attributed.** Every action a mandate allowed names it in the journal's
+  decision record and in the mandate log.
+
+The design borrows its structure from a fly navigation circuit (Lanz et al.,
+*Nature* 2026, [doi:10.1038/s41586-026-11144-9](https://doi.org/10.1038/s41586-026-11144-9)),
+in which inhibition gates when a tracked heading is latched into a recurrent
+goal memory. That is design rationale, not a claim of biological fidelity.
+See [ARCHITECTURE.md](ARCHITECTURE.md#commitment-latch).
+
+---
+
 ## Security model and limits
 
 The claims, and what falsifies them, are in **[SECURITY.md](SECURITY.md)**.
@@ -406,6 +452,7 @@ src/malyutka/
   policy.nim                policy kernel (monotonic layer composition)
   sandbox.nim               bubblewrap broker, fd-pinned workspace, bounded spawn
   journal.nim               write-ahead journal, strict decoder, liveness
+  latch.nim                 commitment latch: mandate log, scopes, budgets
   events.nim                canonical JSONL events + themed console view
   session.nim, config.nim, types.nim
 tests/                      suites, fake providers, certification scripts
@@ -425,8 +472,8 @@ CHANGELOG.md                every release, every audit finding
 | Milestone | Scope |
 |---|---|
 | **M1 / M1.1** ✓ | guidance loop, OpenAI-compatible providers, confined shell, journal |
-| **M1.2** | integration certification on a real host (in progress) |
-| **M2** (partial) | Linux capability layer: **files, search, patch, `todo`, ASK approvals ✓ (0.4.0)**; bounded background processes still open |
+| **M1.2** ✓ | integration certification on a real host ([record](docs/certification/M1.2-calisota-20261007.md)); open: 24.04 + AppArmor restriction |
+| **M2** (partial) | Linux capability layer: **files, search, patch, `todo`, ASK approvals ✓ (0.4.0), commitment latch ✓**; bounded background processes still open |
 | M3 | isolation, deepened: per-capability scopes, cgroups, seccomp, credential broker |
 | M4 | ledger: resumable runs, content-addressed artifacts, replay |
 | M5 | context: token accounting, compaction, skills |

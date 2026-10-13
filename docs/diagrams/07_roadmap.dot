@@ -1,12 +1,12 @@
 digraph roadmap {
     graph [bgcolor="#0d1117", rankdir=LR, fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20,
-           label="07 · Roadmap: isolation precedes capability (status: M1.2 certified 2026-10-11; M2 files+approvals done in 0.4.0)\ngreen: done · amber: in progress · grey: planned · violet: research goals (planned)\n ", nodesep=0.25, ranksep=0.35];
+           label="07 · Roadmap: isolation precedes capability (status: M1.2 certified; M2 files+approvals done in 0.4.0)\ngreen: done · amber: in progress · grey: planned · violet: research goals (planned)\n ", nodesep=0.25, ranksep=0.35];
     node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2,
            margin="0.18,0.12", fillcolor="#161b22", fontsize=11];
     edge  [color="#8b949e", penwidth=1.4, arrowsize=0.8];
 
     m1  [label="M1 · M1.1\nguidance loop\nOpenAI-compatible\nbwrap shell\n✓ done", color="#3fb950"];
-    m12 [label="M1.2\nintegration certification\ncertified on maintainer host\n(Ollama qwen3.5:27b)", color="#3fb950"];
+    m12 [label="M1.2\nintegration certification\n✓ certified (Ubuntu 22.04)\nopen: 24.04 + AppArmor", color="#3fb950"];
     m2  [label="M2\nLinux capability layer\nfiles · search · patch\nASK approvals\n✓ 0.4.0 (processes open)", color="#3fb950"];
     m3  [label="M3\nisolation, deepened\ncgroups · seccomp\ncredential broker", color="#30363d"];
     m4  [label="M4\nledger\nresumable runs\nreplay\n(M4-lite: SPEC-003)", color="#d29922"];

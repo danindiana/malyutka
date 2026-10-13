@@ -3,7 +3,7 @@
 ## sandbox broker decides where. No path executes a call that was not ALLOWed.
 
 import std/[asyncdispatch, json, os, strutils, sysrand, tables, times]
-import ./[types, provider, tools, policy, events, sandbox, journal, approval]
+import ./[types, provider, tools, policy, events, sandbox, journal, approval, latch]
 
 type
   HaltReason* = enum hrFinal, hrMaxSteps, hrRepetition
@@ -62,7 +62,8 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
                sink: EventSink = nullSink; runId = newRunId();
                sandboxProbe: SandboxProbe = defaultProbe;
                journal: Journal = nil;
-               approver: Approver = nil): Future[RunResult] {.async.} =
+               approver: Approver = nil;
+               latch: LatchStore = nil): Future[RunResult] {.async.} =
   let em = newEmitter(runId, sink)
   result.runId = runId
   var names = newJArray()
@@ -105,11 +106,30 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
       discard em.emit("journal.unknown_outcome", %*{"action": a.action, "run": a.run,
         "tool": a.tool, "args": a.args, "startedAt": a.startedAt})
 
+  # Mandate log preconditions (fail closed, invariant L3): disjoint from the
+  # workspace and not corrupt. Without a latch attached, every ASK fails closed.
+  if latch != nil:
+    checkLatchPlacement(latch.path, cfg.cwd)
+    let ls = latch.scan()
+    if ls.health == lhCorrupt:
+      discard em.emit("mandate.corrupt", %*{"problems": ls.problems})
+      raise newException(LatchError, "mandate log is corrupt (" & ls.problems.join("; ") &
+        "); inspect it with `malyutka mandate` before running again")
+    let now = latch.clock()
+    var active = newJArray()
+    for m in ls.mandates:
+      let st = m.effectiveState(now)
+      if st in {msLatched, msSuspended, msProposed}:
+        active.add %*{"mandate": m.id, "state": $st, "goal": m.goal, "tools": m.tools,
+          "maxEffect": $m.maxEffect, "used": m.used, "maxActions": m.maxActions}
+    discard em.emit("mandate.status", %*{"mandates": active})
+
   let schemas = wireSchemas(registry)
   result.messages = @[msg(rSystem, SystemPrompt), msg(rUser, task)]
   var lastSig = ""
   var repeats = 0
   var idSeq = 0
+  var missStreak = 0    # consecutive ASKs no latched mandate covered
 
   for step in 0 ..< cfg.maxSteps:
     discard em.emit("step.start", %*{"step": step})
@@ -184,9 +204,39 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
                        policyId: "journal", reason: intentErr)
         else:
           d = compose(layers, call, spec.capability, effect, cfg, decisionId)
+      # Commitment latch: a latched mandate may resolve an ASK, and nothing
+      # else. DENY and ALLOW never reach it (invariant L2).
+      if d.verdict == vAsk and latch != nil:
+        let u = latch.tryUse(call.name, d.effect, runId, decisionId)
+        if u.mandate.len > 0:
+          missStreak = 0
+          d = Decision(eventId: decisionId, verdict: vAllow, effect: d.effect,
+            policyId: "mandate:" & u.mandate,
+            reason: "within latched mandate (" & $u.used & "/" & $u.maxActions & "): " & u.goal)
+          discard em.emit("mandate.used", %*{"mandate": u.mandate, "used": u.used,
+            "maxActions": u.maxActions, "action": decisionId, "causedBy": proposedId})
+        elif u.error.len > 0:
+          d.reason = "mandate use not durable (" & u.error & "); " & d.reason
+          discard em.emit("mandate.error", %*{"reason": u.error, "causedBy": proposedId})
+        elif u.anyLatched:
+          # Deviation: the model keeps proposing what no latched mandate covers.
+          inc missStreak
+          discard em.emit("mandate.miss", %*{"tool": call.name, "effect": $d.effect,
+            "streak": missStreak, "causedBy": proposedId})
+          if cfg.scopeMissLimit > 0 and missStreak >= cfg.scopeMissLimit:
+            let why = $missStreak & " consecutive calls outside every latched mandate"
+            var ids: seq[string]
+            var err = ""
+            try: ids = latch.suspendLatched(why, "harness:" & runId)
+            except LatchError as e: err = e.msg
+            var idsJ = newJArray()
+            for x in ids: idsJ.add %x
+            discard em.emit("mandate.suspended", %*{"mandates": idsJ, "reason": why,
+              "error": err, "causedBy": proposedId})
+            missStreak = 0
       if d.verdict == vAsk:
-        # Invariant 14: this is the ONLY place an approver is consulted, and
-        # it only ever sees ASK. A DENY from any layer never reaches it.
+        # No mandate resolved it. Invariant 14: this is the ONLY place an approver is
+        # consulted, and it only ever sees ASK. A DENY from any layer never reaches it.
         if approver == nil:
           d.verdict = vDeny
           d.reason = "ASK unanswered (no approver attached): " & d.reason

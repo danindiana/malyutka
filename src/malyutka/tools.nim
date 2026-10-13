@@ -4,7 +4,7 @@
 ## the model (removing a capability removes it from the model's context).
 
 import std/[json, tables]
-import ./[types, sandbox, filetools]
+import ./[types, sandbox, filetools, latch]
 export filetools.ToolProc
 
 type
@@ -97,3 +97,24 @@ proc wireSchemas*(registry: ToolRegistry): JsonNode =
   for name, spec in registry:
     result.add %*{"type": "function", "function": {
       "name": name, "description": spec.description, "parameters": spec.parameters}}
+
+proc proposeMandateSpec*(store: LatchStore; runId: string): ToolSpec =
+  ## Lets the model draft a mandate. Drafting authorizes nothing: only the
+  ## operator (`malyutka mandate approve`) can latch it. Classified B0: it has
+  ## no effect outside the harness, and its own record in the mandate log is
+  ## durable before the result returns.
+  ToolSpec(
+    capability: Capability(name: "propose_mandate", realm: erInProcess, maxEffect: b0ReadOnly),
+    description: "Propose a mandate: a scoped approval the operator may grant so that " &
+      "a class of future tool calls can run without asking each time. Nothing is " &
+      "authorized until the operator approves it.",
+    parameters: proposalSchema(),
+    effectOf: proc(args: JsonNode): EffectClass = b0ReadOnly,
+    run: proc(args: JsonNode; cfg: AgentConfig): ToolResult =
+      try:
+        let m = store.propose(scopeFromToolArgs(args), by = "model:" & runId)
+        ToolResult(ok: true, exitCode: 0, output: "PROPOSED " & m.id & " digest " & m.digest &
+          ". It authorizes nothing until the operator runs: malyutka mandate --approve:" &
+          m.id & " --digest:" & m.digest)
+      except ValueError, LatchError:
+        ToolResult(ok: false, exitCode: 2, output: "proposal rejected: " & getCurrentExceptionMsg()))

@@ -88,6 +88,10 @@ type
     requestTimeoutSec*: int
     theme*: Theme
     jsonEvents*: bool
+    askEnabled*: bool           ## approval layer on: effects >= askFrom yield ASK
+    askFrom*: EffectClass
+    mandates*: bool             ## commitment latch: mandates may resolve ASKs
+    scopeMissLimit*: int        ## uncovered ASKs in a row that suspend the latch (0 = off)
 
 proc baseConfig*(): AgentConfig =
   ## Defaults with no environment or filesystem input (tests use this).
@@ -95,4 +99,5 @@ proc baseConfig*(): AgentConfig =
     approvals: amDeny, approvalTimeoutSec: 300, unconfinedHost: false,
     shellTimeoutSec: 30, maxOutputBytes: 64 * 1024, repeatLimit: 3,
     providerName: "mock", model: "mock", baseUrl: "", apiKey: "",
-    requestTimeoutSec: 300, theme: thPlain, jsonEvents: false)
+    requestTimeoutSec: 300, theme: thPlain, jsonEvents: false,
+    askEnabled: false, askFrom: b1LocalReversible, mandates: false, scopeMissLimit: 3)
