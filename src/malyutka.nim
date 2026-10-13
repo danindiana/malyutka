@@ -1,5 +1,5 @@
-import std/[asyncdispatch, json, os, parseopt, strutils]
-import malyutka/[types, provider, core, session, events, config, sandbox, journal]
+import std/[asyncdispatch, json, os, parseopt, strutils, tables]
+import malyutka/[types, provider, core, session, events, config, sandbox, journal, latch, tools]
 
 const Version = "0.3.4"
 
@@ -13,6 +13,12 @@ Usage:
   malyutka journal --reconcile:ID --as:completed|failed|not-executed
                                        Record the outcome you established for an action
   malyutka journal --ack:ID            Mark it seen, outcome still unknown
+  malyutka mandate                     List mandates and mandate-log health
+  malyutka mandate --grant --tools:a,b --max-effect:B2 --actions:N --ttl:SEC --goal:TEXT
+                                       Propose and approve a mandate in one step
+  malyutka mandate --approve:ID [--digest:CRC]   Latch a proposed mandate
+  malyutka mandate --revoke:ID [--reason:TEXT]   Revoke (never needs approval)
+  malyutka mandate --resume:ID                   Re-latch a suspended mandate
 
 Options:
   --provider:mock|openai|ollama|vllm   Provider adapter (all but mock are OpenAI-compatible)
@@ -27,6 +33,9 @@ Options:
   --request-timeout:SEC      Provider request timeout (default 300)
   --theme:warsaw|nato|plain  Console theme
   --json                     Emit canonical JSONL events on stdout
+  --ask-from:B0..B4          Approval layer: effects at or above this class ASK
+  --mandates                 Let latched mandates resolve ASKs; adds propose_mandate
+  --scope-miss-limit:N       Uncovered ASKs in a row that suspend the latch (default 3, 0=off)
   --config:PATH              JSON config file
 
 Environment:
@@ -35,7 +44,7 @@ Environment:
 
 Exit codes: 0 answered, 1 failure, 2 usage, 3 confinement unavailable, 4 halted,
             5 journal unavailable, misplaced, or unknown outcomes pending,
-            6 journal corrupt (journal command)
+            6 journal corrupt (journal command), 7 mandate log unavailable or corrupt
 """
 
 proc makeProvider(cfg: AgentConfig): Provider =
@@ -55,6 +64,86 @@ proc stateDir(): string =
   getEnv("MALYUTKA_STATE_DIR", parentDir(defaultJournalPath()))
 
 proc journalPath(): string = stateDir() / "journal.jsonl"
+
+proc mandatePath(): string = defaultLatchPath(stateDir())
+
+proc operatorId(): string = "operator:" & getEnv("USER", "unknown")
+
+proc mandateCmd() =
+  var grant = false
+  var approve, revoke, resume, digest, tools, maxEffect, goal = ""
+  var reason = "revoked by operator"
+  var actions, ttl = 0
+  # getopt(@[]) falls back to the real command line, so skip it when empty.
+  let args = commandLineParams()[1 .. ^1]
+  try:
+    for kind, key, val in getopt(args):
+      if args.len == 0: break
+      if kind != cmdLongOption:
+        stderr.writeLine("error: unexpected argument " & key); quit(2)
+      case key
+      of "grant": grant = true
+      of "approve": approve = val
+      of "revoke": revoke = val
+      of "resume": resume = val
+      of "digest": digest = val
+      of "tools": tools = val
+      of "max-effect": maxEffect = val
+      of "actions": actions = parseInt(val)
+      of "ttl": ttl = parseInt(val)
+      of "goal": goal = val
+      of "reason": reason = val
+      else: stderr.writeLine("error: unknown option --" & key); quit(2)
+  except ValueError as e:
+    stderr.writeLine("error: " & e.msg); quit(2)
+  let store = newLatchStore(mandatePath())
+  try:
+    if grant:
+      var ts: seq[string]
+      for t in tools.split(','):
+        if t.strip.len > 0: ts.add t.strip
+      let scope = scopeJson(goal, ts, parseEffect(if maxEffect.len > 0: maxEffect else: "?"),
+                            actions, ttl)
+      let m = store.grant(scope, operatorId())
+      echo m.id, " -> LATCHED  tools=", m.tools.join(","), " max-effect=", $m.maxEffect,
+           " actions=", m.maxActions, " ttl=", m.ttlSec, "s  digest=", m.digest
+      quit(0)
+    if approve.len > 0:
+      let m = store.approve(approve, operatorId(), digest)
+      echo m.id, " -> LATCHED  digest=", m.digest
+      quit(0)
+    if revoke.len > 0:
+      store.revoke(revoke, reason, operatorId())
+      echo revoke, " -> REVOKED"
+      quit(0)
+    if resume.len > 0:
+      store.resume(resume, operatorId())
+      echo resume, " -> LATCHED (resumed)"
+      quit(0)
+  except ValueError as e:
+    stderr.writeLine("error: " & e.msg); quit(2)
+  except LatchError as e:
+    stderr.writeLine("error: " & e.msg); quit(7)
+  let sc = try: store.scan()
+           except LatchError as e: (stderr.writeLine("error: " & e.msg); quit(7))
+  echo "mandates: ", store.path
+  echo "health:   ", $sc.health
+  for p in sc.problems: echo "  CORRUPT: ", p
+  let now = store.clock()
+  for m in sc.mandates:
+    let st = m.effectiveState(now)
+    var left = ""
+    if st in {msLatched, msSuspended}:
+      left = "  expires in " & $int(m.expiresAt - now) & "s"
+    echo "  ", m.id, "  ", alignLeft($st, 10), " tools=", m.tools.join(","),
+         " max-effect=", $m.maxEffect, " used=", m.used, "/", m.maxActions, left
+    echo "      goal: ", m.goal
+    if st == msProposed:
+      echo "      proposed by ", m.proposedBy, "; approve with: malyutka mandate --approve:",
+           m.id, " --digest:", m.digest
+    if m.reason.len > 0: echo "      reason: ", m.reason
+  if sc.health == lhCorrupt: quit(7)
+  quit(0)
 
 proc journalCmd() =
   var ack, reconcile, asState = ""
@@ -156,6 +245,7 @@ proc main() =
   let cmd = paramStr(1)
   if cmd == "doctor": doctor(); quit(0)
   if cmd == "journal": journalCmd()
+  if cmd == "mandate": mandateCmd()
   if cmd in ["-h", "--help", "help"]: usage(); quit(0)
   if cmd != "run": usage(); quit(2)
 
@@ -185,6 +275,9 @@ proc main() =
         of "request-timeout": cfg.requestTimeoutSec = parseInt(val)
         of "theme": cfg.theme = parseTheme(val)
         of "json": cfg.jsonEvents = true
+        of "ask-from": (cfg.askEnabled = true; cfg.askFrom = parseEffect(val))
+        of "mandates": cfg.mandates = true
+        of "scope-miss-limit": cfg.scopeMissLimit = parseInt(val)
         of "config": discard
         else: stderr.writeLine("error: unknown option --" & key); quit(2)
       of cmdShortOption:
@@ -213,7 +306,13 @@ proc main() =
     except JournalError as e:
       stderr.writeLine("malyutka: journal unavailable, refusing to run: " & e.msg); quit(5)
     defer: j.close()
-    let res = waitFor runAgent(makeProvider(cfg), task, cfg, sink = sink, runId = runId, journal = j)
+    var store: LatchStore = nil
+    var registry = toolsFor(cfg)
+    if cfg.mandates:
+      store = newLatchStore(mandatePath())
+      registry["propose_mandate"] = proposeMandateSpec(store, runId)
+    let res = waitFor runAgent(makeProvider(cfg), task, cfg, registry = registry, sink = sink,
+                               runId = runId, journal = j, latch = store)
     # Outside the workspace, like the journal: the sandboxed agent cannot edit it.
     saveSession(stateDir() / "sessions" / (res.runId & ".json"), res.runId, res.messages)
     if cfg.jsonEvents: stderr.writeLine("FINAL: " & res.answer)
@@ -222,6 +321,9 @@ proc main() =
   except JournalError as e:
     stderr.writeLine("malyutka: journal refused the run: " & headline(e.msg))
     quit(5)
+  except LatchError as e:
+    stderr.writeLine("malyutka: mandate log refused the run: " & headline(e.msg))
+    quit(7)
   except ConfinementError as e:
     stderr.writeLine("malyutka: confinement unavailable, refusing to run: " & headline(e.msg))
     stderr.writeLine("  fix: apt install bubblewrap, check `malyutka doctor`, or pass --unconfined-host")
