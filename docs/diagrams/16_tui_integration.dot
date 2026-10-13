@@ -14,7 +14,7 @@ digraph tuiint {
     ro [label="state dir (read-only)\nsessions/ · journal tail", shape=folder, color="#d29922", fillcolor="#2e2410"];
     opcmd [label="malyutka journal\n--ack / --reconcile\n(locked transaction)", color="#3fb950"];
     oll [label="Ollama /api/tags", color="#58a6ff", fillcolor="#13294d"];
-    plan [label="planned: approval.request ⟶ modal ⟶ answer on child stdin;\n--resume <last run> for multi-turn", color="#d29922", style="filled,dashed"];
+    plan [label="next PR: approval.request ⟶ modal ⟶ answer on child stdin;\n--resume <last run> for multi-turn", color="#d29922", style="filled,dashed"];
 
     op -> ui; ui -> app; app -> rn; rn -> cli [label="spawn / kill"]; cli -> rn [label="JSONL events"];
     rn -> app [label="Msg::Ev / Stderr / Exit"];

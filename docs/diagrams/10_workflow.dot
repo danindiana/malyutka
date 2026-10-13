@@ -1,14 +1,14 @@
 digraph workflow {
     graph [bgcolor="#0d1117", fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20, rankdir=TB,
-           label="10 · Workflow: one agent turn (and where resume / approvals plug in)\nsolid = implemented · dashed amber = planned (SPEC-003 resume)\n ", nodesep=0.3, ranksep=0.4];
+           label="10 · Workflow: one agent turn (and where resume / approvals plug in)\nsolid = implemented (0.5.0)\n ", nodesep=0.3, ranksep=0.4];
     node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2, margin="0.22,0.14", fillcolor="#161b22", fontsize=12];
     edge  [color="#8b949e", fontname="Helvetica", fontcolor="#adbac7", penwidth=1.5, arrowsize=0.85, fontsize=10];
 
     start [label="malyutka run [--resume:ID] <task>", shape=oval, color="#58a6ff", fillcolor="#13294d"];
     probe [label="Preflight\nworkspace guard · state dir disjoint\nbwrap probe (exit 3 on failure)\njournal open + unknown-outcome report", color="#f0883e"];
-    resume [label="Load session\nvalidateTranscript\nrefuse if parent has unknown outcomes", color="#d29922", style="filled,rounded,dashed"];
+    resume [label="Load session\nvalidateTranscript · fresh system prompt\nrefuse if lineage has unknown outcomes\n(history is inert: I15)", color="#d29922"];
     ask_model [label="Provider call\nmessages + advertised tools", color="#58a6ff", fillcolor="#13294d"];
-    final [label="Plain answer?\n⟶ agent.final · session saved · exit 0", color="#3fb950"];
+    final [label="Plain answer?\n⟶ agent.final · session.saved · exit 0", color="#3fb950"];
     prop [label="tool.proposed\n(call ids normalised)", color="#58a6ff"];
     reg [label="Registry lookup", color="#3fb950"];
     j1 [label="Journal: intent (fdatasync)", color="#d29922"];
@@ -17,12 +17,12 @@ digraph workflow {
     j2 [label="Journal: decision + started", color="#d29922"];
     exec [label="Execute\nbwrap shell / file tools\n(openat + O_NOFOLLOW)", color="#f0883e"];
     j3 [label="Journal: outcome", color="#d29922"];
-    obs [label="tool message answers call id\nrepeat-limit · max-steps checks", color="#39c5cf", fillcolor="#0d2e2e"];
+    obs [label="tool message answers call id\nrepeat-limit · max-steps checks\ncheckpoint: session saved atomically", color="#39c5cf", fillcolor="#0d2e2e"];
     deny [label="DENIED / CANCELLED\nstill a reply", color="#f85149", fillcolor="#3a1518"];
 
-    start -> probe -> resume [style=dashed, color="#d29922"];
+    start -> probe -> resume [color="#d29922", label="--resume"];
     probe -> ask_model;
-    resume -> ask_model [style=dashed, color="#d29922"];
+    resume -> ask_model [color="#d29922"];
     ask_model -> final [label="no tool calls"];
     ask_model -> prop [label="tool calls"];
     prop -> reg -> j1 -> pol -> j2 -> exec -> j3 -> obs;

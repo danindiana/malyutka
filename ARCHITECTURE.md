@@ -73,7 +73,7 @@ could violate it; the column names the milestone that must enforce it.
 
 | # | Invariant | Status | Test(s) |
 |---|---|---|---|
-| 1 | Model output is data, never authority | enforced | I1 |
+| 1 | Model output is data, never authority | enforced; memory notes and SOUL.md are data in the system prompt, fenced and unable to change the tool list or policy | I1, memory/soul tests |
 | 2 | Deny always dominates allow | enforced | I2, I2b, I2c |
 | 3 | Children cannot acquire capabilities absent from parents | vacuous (M6) | — |
 | 4 | Plugins cannot modify the policy kernel at runtime | vacuous (no plugins); layers fixed per run | — |
@@ -87,6 +87,7 @@ could violate it; the column names the milestone that must enforce it.
 | 12 | Recovery claims never exceed what was journaled | enforced in its present form: an action with `started` and no `outcome` is UNKNOWN_OUTCOME and never re-executed. Acknowledging it does not mark it resolved; only an explicit `reconcile` does. There is no undo | J6, J15, J16, integration 3–5b |
 | 13 | File tools cannot read or write outside the workspace | enforced: every path is walked component by component with `openat(2)` + `O_NOFOLLOW` from the workspace's own fd (no string path is re-resolved); absolute paths and `..` are refused lexically; writes are temp file + `renameat`. Residual: an operator-placed hard link is writable through | I13 (traversal, absolute, final/intermediate symlink, size/binary), mutants in `tests/test_m2.nim` header |
 | 14 | An approver can only upgrade ASK to ALLOW | enforced: the approver is consulted only on the ASK branch, so a DENY from any layer (including the hardline denylist) is final; unanswered, timed-out, EOF, malformed, wrong-action and raising approvers all deny; allowlist defects (mode, owner, symlink, checksum, schema) make the whole file untrusted | I14, approver mechanics, integration 9 |
+| 15 | Resume never re-executes: a resumed session only rebuilds the message list | enforced: history is validated (`validateTranscript`) and loaded as inert messages; no journal record is written for it and no file is touched; the system prompt is rebuilt, never inherited; resume is refused while the session's lineage has an unresolved (UNKNOWN_OUTCOME / OWNER_STATUS_UNKNOWN / IN_PROGRESS) action unless `--resume-despite-unknown`. Sessions are decoded strictly (schema, roles, ids, no symlinks) | I15, session strictness, integration 10 |
 | P | Every proposed tool call receives exactly one terminal result | enforced | completeness tests, protocol fuzz (2000 scripts) |
 
 Invariant **P** is new in 0.3.1. M1.1 violated it: a repetition halt in the

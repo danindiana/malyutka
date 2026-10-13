@@ -1,6 +1,6 @@
 # SPEC-003 — Incremental sessions and resume
 
-**Status:** planned · **Invariant:** I15 (new) · **Roadmap:** M4-lite
+**Status:** implemented in 0.5.0 · **Invariant:** I15 (new) · **Roadmap:** M4-lite
 
 ## Goals
 A crash keeps the transcript; a follow-up prompt continues the conversation; the TUI becomes multi-turn.
@@ -10,7 +10,7 @@ Replay of tool effects; compaction (M5); full-text search index (see `todo/P2-se
 
 ## Format (`sessions/<run>.json`)
 Existing `{run, messages[]}` plus meta:
-`{schema: 2, parent?, title?, provider, model, startedAt, updatedAt, status: running|answered|halted|failed}`.
+`{schema: 2, run, meta: {parent, title, provider, model, startedAt, updatedAt, status: running|answered|halted}, messages}`.
 Written atomically (tmp + fsync + rename) **after every step**, not just at the end.
 Strict decoder; unknown schema ⇒ refuse (no silent best-effort).
 

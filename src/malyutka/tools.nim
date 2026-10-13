@@ -4,7 +4,7 @@
 ## the model (removing a capability removes it from the model's context).
 
 import std/[json, tables]
-import ./[types, sandbox, filetools]
+import ./[types, sandbox, filetools, memory]
 export filetools.ToolProc
 
 type
@@ -87,6 +87,13 @@ proc toolsFor*(cfg: AgentConfig): ToolRegistry =
   result["echo"] = echoSpec()
   if cfg.allowShell:
     result["shell"] = shellSpec(cfg)
+  if cfg.allowMemory and cfg.stateDir.len > 0:
+    result["memory"] = fileSpec("memory",
+      "Persistent notes that survive across sessions (max 8 KiB). " &
+      "ops: add{text}, replace{old,new}, remove{text}. Keep entries short and factual.",
+      %*{"type": "object", "properties": {"op": {"type": "string"}, "text": {"type": "string"},
+         "old": {"type": "string"}, "new": {"type": "string"}}, "required": ["op"]},
+      b2BroadWorkspace, runMemoryTool)
   if cfg.allowFiles:
     for t in fileToolProcs():
       result[t.name] = fileSpec(t.name, t.description, t.parameters, t.ceiling, t.run)

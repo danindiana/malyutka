@@ -43,6 +43,11 @@ never falls back to the host. Each claim is pinned by a test in
   An `always` grant is an exact-match entry in `<state>/allowlist.json`
   (checksummed, 0600); it detects accident and casual edits, not an adversary
   running as your uid.
+- **Memory and sessions are data.** `memory.md` is written only by the journaled
+  `memory` tool (capped at 8 KiB, 0600) and enters the prompt fenced and labelled
+  untrusted; it cannot change the tool list or policy, but it *can* steer the
+  model, like any text it reads. Resuming a session re-sends its transcript to
+  the provider, including tool output. Session files are 0600 in the state dir.
 - Model output is untrusted data. Malyutka does not try to detect prompt
   injection; it limits what an injected instruction can do.
 

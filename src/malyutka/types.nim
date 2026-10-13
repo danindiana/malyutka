@@ -75,6 +75,11 @@ type
     cwd*: string
     allowShell*: bool
     allowFiles*: bool           ## enable read_file/search_files/write_file/patch/todo
+    allowMemory*: bool          ## enable the `memory` tool (needs stateDir)
+    stateDir*: string           ## journal/sessions/memory live here (never the workspace)
+    soul*: string               ## operator text prepended to the system prompt
+    personality*: string
+    memoryText*: string         ## snapshot of memory.md taken at run start
     approvals*: ApprovalMode
     approvalTimeoutSec*: int    ## unanswered ASK becomes DENY after this long
     unconfinedHost*: bool       ## explicit waiver: shell may run unsandboxed
@@ -91,7 +96,7 @@ type
 
 proc baseConfig*(): AgentConfig =
   ## Defaults with no environment or filesystem input (tests use this).
-  AgentConfig(maxSteps: 16, cwd: ".", allowShell: false, allowFiles: false,
+  AgentConfig(maxSteps: 16, cwd: ".", allowShell: false, allowFiles: false, allowMemory: false,
     approvals: amDeny, approvalTimeoutSec: 300, unconfinedHost: false,
     shellTimeoutSec: 30, maxOutputBytes: 64 * 1024, repeatLimit: 3,
     providerName: "mock", model: "mock", baseUrl: "", apiKey: "",
