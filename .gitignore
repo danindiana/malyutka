@@ -8,3 +8,6 @@ nimcache/
 m12-selftest-failures/
 m12-report-*.txt
 m12-diagnostics-*/
+
+# Rust TUI crate
+tui/target/
