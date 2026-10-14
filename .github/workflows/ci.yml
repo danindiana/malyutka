@@ -52,6 +52,9 @@ jobs:
       - name: Shell scripts
         run: shellcheck -S warning tests/*.sh tools/*.sh
 
+      - name: Live-battery assertion self-test
+        run: python3 -I tests/m2_live_check_selftest.py
+
   certifier:
     name: Certifier self-test
     runs-on: ubuntu-24.04

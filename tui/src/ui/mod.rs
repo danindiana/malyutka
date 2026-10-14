@@ -149,7 +149,7 @@ fn draw_approval(f: &mut Frame, app: &App, a: &crate::app::Approval, area: Rect)
         &transcript::trunc(&a.args, 300),
         w.saturating_sub(6) as usize,
     );
-    let h = (args.len() as u16 + 8).min(area.height);
+    let h = (args.len() as u16 + 9).min(area.height);
     let r = Rect::new(
         area.x + (area.width - w) / 2,
         area.y + (area.height - h) / 2,
@@ -213,6 +213,10 @@ fn draw_approval(f: &mut Frame, app: &App, a: &crate::app::Approval, area: Rect)
             Style::default().fg(s.dim),
         ),
     ]));
+    lines.push(Line::styled(
+        " or pre-approve a class of actions: malyutka mandate --grant … (/mandates)",
+        Style::default().fg(s.dim),
+    ));
     f.render_widget(Paragraph::new(lines), inner);
 }
 

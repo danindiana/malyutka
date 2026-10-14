@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Assertions for tests/m2-live.sh over a `malyutka run --json` trace (JSONL).
+
+Usage: m2_live_check.py invariants TRACE
+       m2_live_check.py has TRACE KIND [key=value ...]   (key~=value is a prefix match)
+       m2_live_check.py count TRACE KIND
+Exit 0 = true / no violations; 1 = false / violations (printed); 2 = usage.
+
+`invariants` holds regardless of what the model chose to do:
+  * every tool.proposed gets exactly one policy.decision (causedBy)
+  * every ALLOWed call gets exactly one tool.result or tool.cancelled
+  * a non-ALLOW decision never produces a tool.result
+  * the run ends in agent.final or agent.halt
+"""
+import json
+import sys
+
+
+def load(path):
+    out = []
+    for line in open(path, errors="replace"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(e, dict) and "kind" in e:
+            out.append(e)
+    return out
+
+
+def invariants(events):
+    bad = []
+    proposed = [e["payload"].get("id") for e in events if e["kind"] == "tool.proposed"]
+    decisions = {}
+    for e in events:
+        if e["kind"] == "policy.decision":
+            decisions.setdefault(e["payload"].get("causedBy"), []).append(e["payload"])
+    for pid in proposed:
+        n = len(decisions.get(pid, []))
+        if n != 1:
+            bad.append(f"proposal {pid} has {n} decisions")
+    results = {}
+    for e in events:
+        if e["kind"] in ("tool.result", "tool.cancelled"):
+            results.setdefault(e["payload"].get("causedBy"), []).append(e["kind"])
+    for pid in proposed:
+        for d in decisions.get(pid, []):
+            did = d.get("id")
+            r = results.get(did, [])
+            if d.get("verdict") == "ALLOW" and len(r) != 1:
+                bad.append(f"ALLOWed {did} has {len(r)} terminal results")
+            if d.get("verdict") != "ALLOW" and r:
+                bad.append(f"{d.get('verdict')} {did} still produced a result")
+    kinds = [e["kind"] for e in events]
+    if "agent.final" not in kinds and "agent.halt" not in kinds:
+        bad.append("run ended without agent.final or agent.halt")
+    return bad
+
+
+def has(events, kind, conds):
+    for e in events:
+        if e["kind"] != kind:
+            continue
+        ok = True
+        for c in conds:
+            k, _, v = c.partition("=")
+            prefix = k.endswith("~")
+            k = k.rstrip("~")
+            got = e["payload"].get(k)
+            got = json.dumps(got) if isinstance(got, (dict, list)) else str(got)
+            if (prefix and not got.startswith(v)) or (not prefix and got != v):
+                ok = False
+                break
+        if ok:
+            return True
+    return False
+
+
+def main(argv):
+    if len(argv) < 3:
+        print(__doc__)
+        return 2
+    cmd, events = argv[1], load(argv[2])
+    if cmd == "invariants":
+        bad = invariants(events)
+        for b in bad:
+            print("VIOLATION:", b)
+        return 1 if bad else 0
+    if cmd == "has" and len(argv) >= 4:
+        return 0 if has(events, argv[3], argv[4:]) else 1
+    if cmd == "count" and len(argv) == 4:
+        print(sum(1 for e in events if e["kind"] == argv[3]))
+        return 0
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

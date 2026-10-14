@@ -13,7 +13,7 @@ digraph architecture {
     }
     subgraph cluster_h {
         label="malyutka (Nim) — trusted harness process"; fontcolor="#bc8cff"; color="#bc8cff"; style="rounded,dashed";
-        cli [label="malyutka.nim\nCLI: run · doctor · journal", color="#58a6ff"];
+        cli [label="malyutka.nim\nCLI: run · doctor · journal\nsessions · mandate", color="#58a6ff"];
         core [label="core.nim\nguidance loop\nvalidateTranscript", color="#3fb950"];
         provider [label="provider.nim\nmock · OpenAI-compatible", color="#58a6ff"];
         tools [label="tools.nim\nregistry · ToolSpec", color="#3fb950"];
@@ -22,17 +22,24 @@ digraph architecture {
         session [label="session.nim\ntranscript JSON", color="#d29922"];
         events [label="events.nim\nJSONL + console sinks", color="#39c5cf"];
         sandbox [label="sandbox.nim\nbwrap broker · workspace fd", color="#f0883e"];
+        approval [label="approval.nim\napprovers · grants · allowlist", color="#3fb950"];
+        latch [label="latch.nim\nmandates (commitment latch)\nL1-L5", color="#3fb950"];
+        filetools [label="filetools.nim\nopenat + O_NOFOLLOW (I13)", color="#f0883e"];
+        memory [label="memory.nim\nmemory · SOUL · personas", color="#d29922"];
     }
     bwrap [label="bwrap child\n/bin/sh -c cmd\ntmpfs root · ws rw", color="#f0883e", fillcolor="#3a2210"];
     model [label="Model server\nOllama · vLLM · OpenAI", color="#58a6ff", fillcolor="#13294d"];
-    state [label="State dir\njournal.jsonl · runs/*.lock\nsessions/*.json", shape=folder, color="#d29922", fillcolor="#2e2410"];
+    state [label="State dir\njournal.jsonl · runs/*.lock\nsessions/*.json · mandates.jsonl\nallowlist.json · memory.md", shape=folder, color="#d29922", fillcolor="#2e2410"];
     ws [label="Workspace dir", shape=folder, color="#f0883e", fillcolor="#3a2210"];
 
     user -> tui; tui -> runner; tui -> ollama_c; ollama_c -> model [label="HTTP", style=dashed];
     runner -> cli [label="spawn --json\nstdout JSONL"];
     cli -> core; core -> provider -> model [label="POST /v1/chat/completions"];
     core -> tools; core -> policy; core -> journal; core -> session; core -> events;
+    core -> latch [label="ASK 1st"]; core -> approval [label="ASK 2nd"]; core -> memory [label="system prompt"];
+    tools -> filetools;
     tools -> sandbox -> bwrap; bwrap -> ws [label="rw bind-fd"];
     journal -> state; session -> state;
+    latch -> state [label="mandates.jsonl"]; approval -> state [label="allowlist.json"]; memory -> state [label="memory.md · SOUL.md"];
     tui -> state [label="read-only\n/history /journal", style=dashed, color="#d29922"];
 }

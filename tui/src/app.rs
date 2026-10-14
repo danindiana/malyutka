@@ -395,6 +395,49 @@ impl App {
                     _ => self.items.push(Item::Todo(list)),
                 }
             }
+            "mandate.used" => self.items.push(Item::Note(format!(
+                "mandate {} used ({}/{})",
+                e.s("mandate"),
+                e.payload.get("used").and_then(|v| v.as_u64()).unwrap_or(0),
+                e.payload
+                    .get("maxActions")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0)
+            ))),
+            "mandate.miss" => {
+                if self.cfg.verbose {
+                    self.items.push(Item::Note(format!(
+                        "no mandate covers {} ({} in a row)",
+                        e.s("tool"),
+                        e.payload
+                            .get("streak")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0)
+                    )));
+                }
+            }
+            "mandate.suspended" => self
+                .items
+                .push(Item::Warn(format!("mandates suspended: {}", e.s("reason")))),
+            "mandate.corrupt" | "mandate.error" => self.items.push(Item::Err(format!(
+                "mandate log problem: {}",
+                e.payload
+                    .get("reason")
+                    .map(|v| v.to_string())
+                    .or_else(|| e.payload.get("problems").map(|v| v.to_string()))
+                    .unwrap_or_default()
+            ))),
+            "mandate.status" => {
+                let n = e
+                    .payload
+                    .get("mandates")
+                    .and_then(|v| v.as_array())
+                    .map_or(0, |a| a.len());
+                if n > 0 {
+                    self.items
+                        .push(Item::Note(format!("{n} mandate(s) active (see /mandates)")));
+                }
+            }
             "memory.updated" => self.items.push(Item::Note(format!(
                 "memory {} ({} bytes)",
                 e.s("op"),
@@ -790,5 +833,50 @@ mod picker_tests {
         assert!(
             matches!(a.items.last(), Some(Item::Tool { preview, .. }) if preview.contains("+ new"))
         );
+    }
+
+    #[test]
+    fn mandate_events_become_transcript_lines() {
+        let mut a = app();
+        a.on_event(ev(
+            "mandate.status",
+            serde_json::json!({"mandates":[{"mandate":"M-1"}]}),
+        ));
+        a.on_event(ev(
+            "mandate.used",
+            serde_json::json!({"mandate":"M-1","used":1,"maxActions":3}),
+        ));
+        a.on_event(ev(
+            "mandate.suspended",
+            serde_json::json!({"reason":"3 consecutive calls outside every latched mandate"}),
+        ));
+        a.on_event(ev(
+            "mandate.corrupt",
+            serde_json::json!({"problems":["bad crc"]}),
+        ));
+        let texts: Vec<String> = a
+            .items
+            .iter()
+            .map(|i| match i {
+                Item::Note(t) | Item::Warn(t) | Item::Err(t) => t.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert!(texts[0].contains("1 mandate(s) active"));
+        assert!(texts[1].contains("M-1 used (1/3)"));
+        assert!(texts[2].contains("suspended"));
+        assert!(texts[3].contains("bad crc"));
+        // a miss is quiet unless verbose
+        a.on_event(ev(
+            "mandate.miss",
+            serde_json::json!({"tool":"shell","streak":1}),
+        ));
+        assert_eq!(a.items.len(), 4);
+        a.cfg.verbose = true;
+        a.on_event(ev(
+            "mandate.miss",
+            serde_json::json!({"tool":"shell","streak":2}),
+        ));
+        assert_eq!(a.items.len(), 5);
     }
 }

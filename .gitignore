@@ -11,3 +11,5 @@ m12-diagnostics-*/
 
 # Rust TUI crate
 tui/target/
+m2-live-report-*.txt
+__pycache__/

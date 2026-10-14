@@ -170,6 +170,11 @@ fn run_command(app: &mut App, line: &str, tx: &Sender<Msg>) {
             app.session = Some(arg.to_string());
             app.note(format!("next prompt resumes session {arg}"));
         }
+        "/mandates" => {
+            let o = runner::capture(&app.cfg.bin, &["mandate"]);
+            app.note(o.trim_end().to_string());
+            app.note("grant one with: malyutka mandate --grant --tools:shell --max-effect:B2 --actions:5 --ttl:600 --goal:'...'");
+        }
         "/memory" => {
             let p = state_dir().join("memory.md");
             match std::fs::read_to_string(&p) {
