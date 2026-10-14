@@ -8,7 +8,7 @@
 #
 # Env: M2_OLLAMA_URL (default http://127.0.0.1:11434), M2_ATTEMPTS (3 per
 # check), M2_TIMEOUT seconds per run (240), M2_BIN (./malyutka), M2_CHECKS (space
-# separated subset, default all), M2_KEEP=1 (keep the scratch dir and print it).
+# separated subset, default all), M2_SEARXNG_URL (a SearXNG with json enabled; enables the websearch check), M2_KEEP=1 (keep the scratch dir and print it).
 # Needs bubblewrap for the shell checks, python3, and a built ./malyutka.
 #
 # Results per model and check:
@@ -299,7 +299,22 @@ c_web() {
   return 0
 }
 
-ALL_CHECKS="files shell_and_files ask_deny ask_once ask_timeout resume memory mandate compaction process skills mcp web"
+c_websearch() {
+  fresh "wsr-$2"
+  [ -n "${M2_SEARXNG_URL:-}" ] || { log "      (set M2_SEARXNG_URL to a SearXNG with the json format enabled: skipping)"; return 2; }
+  mkdir -p "$MALYUTKA_STATE_DIR"
+  python3 -c 'import json,sys; print(json.dumps({"search":{"backend":"searxng","searxng":{"url":sys.argv[1],"trust":"allow"}}}))' "$M2_SEARXNG_URL" > "$MALYUTKA_STATE_DIR/web.json"
+  chmod 600 "$MALYUTKA_STATE_DIR/web.json"
+  approved_run "wsr-$2" "$1" once "Use the web_search tool to search for: nim programming language. Then tell me the URL of the official Nim website. Answer with the URL only." --web
+  invariants "wsr-$2" || return $?
+  chk has "$WORK/wsr-$2.trace" tool.proposed name=web_search || return 2
+  chk has "$WORK/wsr-$2.trace" web.searched backend=searxng || return 2
+  chk has "$WORK/wsr-$2.trace" approval.request tool=web_search && { log "      a trusted loopback search asked"; return 1; }
+  grep -qi 'nim-lang.org' "$WORK/wsr-$2.err" || return 2
+  return 0
+}
+
+ALL_CHECKS="files shell_and_files ask_deny ask_once ask_timeout resume memory mandate compaction process skills mcp web websearch"
 CHECKS=${M2_CHECKS:-$ALL_CHECKS}
 for m in $MODELS; do
   log ""; log "== model $m"

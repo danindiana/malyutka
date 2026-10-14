@@ -4,7 +4,7 @@
 ## line on stdout. It never reads a file the harness did not bind in, and it dies on its own deadline.
 
 import std/[json, net, strutils]
-import malyutka/[httpfetch, htmltext, urlsafety]
+import malyutka/[httpfetch, htmltext, urlsafety, websearch]
 
 const MaxRequestBytes = 512 * 1024
 
@@ -88,6 +88,22 @@ proc main() =
     let w = parseWebUrl(r.finalUrl)
     respond %*{"ok": true, "status": r.status, "finalUrl": r.finalUrl, "host": w.host, "contentType": r.contentType,
                "title": title, "text": text, "bytes": r.body.len, "truncated": truncated, "redirects": r.redirects}
+  of "search":
+    let backend = strOf(req, "backend")
+    if backend notin Backends:
+      fail("unknown search backend"); return
+    let rq = SearchReq(backend: backend, base: strOf(req, "base"), key: strOf(req, "apiKey"),
+                       query: strOf(req, "query"), limit: intOf(req, "limit", 5, 1, MaxHits))
+    let res = runSearch(rq, timeout, strOf(req, "caFile"), strList(req, "denyDomains"), strList(req, "allowPrivate"))
+    if not res.ok:
+      # a credential is never echoed, whatever an upstream error message contained
+      var msg = res.error
+      if rq.key.len > 0: msg = msg.replace(rq.key, "[key]")
+      fail(msg); return
+    var arr = newJArray()
+    for h in res.hits:
+      arr.add %*{"title": h.title, "url": h.url, "description": h.description, "position": h.position}
+    respond %*{"ok": true, "backend": backend, "results": arr}
   else:
     fail("unknown op")
 

@@ -118,11 +118,24 @@ let mcpAskLayer* = PolicyLayer(id: "mcp.ask",
       (vAsk, "MCP tool " & call.name & " runs outside the harness")
     else: (vAllow, ""))
 
+proc searchExempt*(cfg: AgentConfig): bool =
+  ## The one web call that may run unasked: a search against a SearXNG the operator marked trust:allow
+  ## AND that lives on loopback. Derived from the live config at every decision (invariant 18).
+  let sc = cfg.webSearch
+  if sc.backend != "searxng" or not sc.trustAllow: return false
+  let w = parseWebUrl(sc.url)
+  w.ok and loopbackHost(w.host)
+
 let webUrlLayer* = PolicyLayer(id: "web.url",
   check: proc(call: ToolCall; cap: Capability; effect: EffectClass;
               cfg: AgentConfig): tuple[verdict: Verdict, reason: string] =
     ## DENY, not ASK: a URL that carries credentials, targets a private/metadata address or a denylisted
     ## domain must never reach an approver (invariant 18). Checks that need DNS happen in the helper.
+    if call.name == "web_search":
+      let q = if call.args.kind == JObject and call.args.hasKey("query") and call.args["query"].kind == JString:
+                call.args["query"].getStr else: ""
+      let why = queryProblem(q)
+      if why.len > 0: return (vDeny, why)
     if call.name == "web_fetch":
       let url = if call.args.kind == JObject and call.args.hasKey("url") and call.args["url"].kind == JString:
                   call.args["url"].getStr.strip else: ""
@@ -135,8 +148,14 @@ let webAskLayer* = PolicyLayer(id: "web.ask",
               cfg: AgentConfig): tuple[verdict: Verdict, reason: string] =
     ## Every web call asks (mandate, approver or deny): it sends text to a third party and reads
     ## untrusted text back. Only an operator-trusted loopback search is exempt (askExempt).
-    if cap.realm == erNetwork and not cap.askExempt:
+    if cap.realm == erNetwork:
+      # The exemption is re-derived from the live config on every call; a flag on the capability alone is not enough.
+      if cap.askExempt and call.name == "web_search" and searchExempt(cfg): return (vAllow, "")
       var target = call.name
+      if call.name == "web_search" and call.args.kind == JObject and call.args.hasKey("query") and call.args["query"].kind == JString:
+        var q = call.args["query"].getStr.strip
+        if q.len > 120: q = q[0 ..< 120] & "…"
+        target = "search via " & cfg.webSearch.backend & ": " & q
       if call.name == "web_fetch" and call.args.kind == JObject and call.args.hasKey("url") and call.args["url"].kind == JString:
         let w = parseWebUrl(call.args["url"].getStr.strip)
         if w.ok: target = "fetch " & w.host

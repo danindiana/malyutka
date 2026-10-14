@@ -150,5 +150,23 @@ sandboxed `malyutka_web` helper (DNS and TLS verification inside bwrap with netw
 Also checked by hand: `localtest.me` (a public name that resolves to 127.0.0.1) is refused by the helper after
 approval; literal private/metadata addresses, non-canonical IP spellings and credential-looking query parameters are
 denied by `web.url` before any approver is asked, even with `--approvals:off`; and the TUI walkthrough (modal with the
-exact URL, result note). Only two models were run for this check; `web_search` and its backends (SearXNG, Brave,
-Tavily) are not part of this addendum.
+exact URL, result note). Only two models were run for this check.
+
+## Addendum: web search (SPEC-011, part 2)
+
+`websearch`: a real SearXNG (`searxng/searxng:latest` in docker, bound to `127.0.0.1:18888`, `search.formats: [html, json]`,
+`web.json` with `trust: "allow"`) and `M2_SEARXNG_URL` pointing at it. The model is asked to search for "nim programming
+language" and give the official site. The harness must have emitted `tool.proposed web_search` and
+`web.searched backend=searxng`, must **not** have asked (a loopback `trust: allow` search is the one unasked web call),
+and the results must have reached the model (the answer contains `nim-lang.org`).
+
+| Model | websearch |
+|---|---|
+| qwen3.5:9b | PASS |
+| gpt-oss:20b | PASS |
+
+The same instance was also queried directly through the CLI with a scripted provider: 3 real results, labelled
+`untrusted search results`, one request in the SearXNG log. **Brave and Tavily were not run live (no accounts or keys on
+this host); they are verified against local fakes over https only** (key header and body shape, rejected key, no
+redirect, no http, no fallback). Their real response shapes follow the vendors' public documentation and may need a
+small parser adjustment on first real use.

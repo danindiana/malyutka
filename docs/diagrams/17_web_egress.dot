@@ -5,14 +5,15 @@ digraph web_egress {
            margin="0.2,0.14", fillcolor="#161b22", fontsize=12];
     edge  [color="#8b949e", fontname="Helvetica", fontcolor="#adbac7", penwidth=1.5, arrowsize=0.85, fontsize=10];
 
-    model [label="Model proposes\nweb_fetch(url)\n(data, not authority)", color="#58a6ff", fillcolor="#13294d"];
+    model [label="Model proposes\nweb_fetch(url) / web_search(query)\n(data, not authority)", color="#58a6ff", fillcolor="#13294d"];
     subgraph cluster_h {
         label="malyutka (no TLS, no HTML parsing)"; fontcolor="#bc8cff"; color="#bc8cff"; style="rounded,dashed";
-        url  [label="web.url layer\nscheme · userinfo · secret formats\nprivate/metadata literals · denylist\nnon-canonical IPs", color="#3fb950"];
+        url  [label="web.url layer\ncredential-shaped query\nscheme · userinfo · secret formats\nprivate/metadata literals · denylist\nnon-canonical IPs", color="#3fb950"];
         deny [label="DENY (final:\nno approver sees it)", color="#f85149", fillcolor="#3a1518"];
-        ask  [label="web.ask layer → ASK\nmandate → approver → deny\n(approval shows the exact URL)", color="#d29922"];
+        ask  [label="web.ask layer → ASK\nmandate → approver → deny\n(approval shows the exact URL / query)", color="#d29922"];
+        trusted [label="only exception: search on a\ntrust:allow SearXNG at loopback\n(re-derived from live config)", color="#3fb950"];
         jr   [label="journal intent/decision/\nstarted/outcome (B3)", color="#d29922"];
-        call [label="callHelper\none JSON line out,\none JSON line in, deadline", color="#bc8cff"];
+        call [label="callHelper\none JSON line out (key via stdin),\none JSON line in, deadline", color="#bc8cff"];
     }
     subgraph cluster_s {
         label="bwrap: network shared · NO workspace · NO state dir · NO $HOME"; fontcolor="#f0883e"; color="#f0883e"; style="rounded";
@@ -21,6 +22,7 @@ digraph web_egress {
         read [label="bounded read\nheaders 64 KiB · body 2 MiB\ntime · content-type allow-list", color="#f0883e"];
         redir[label="redirect? re-check the\nwhole URL, https→http refused,\nno headers forwarded", color="#f0883e"];
         txt  [label="HTML → text\n(linear time, no tree)", color="#f0883e"];
+        back [label="search: ONE chosen backend\nSearXNG · Brave · Tavily\nkey only to its https host,\nno redirects, NO fallback", color="#f0883e"];
     }
     net   [label="the internet", shape=oval, color="#58a6ff", fillcolor="#13294d"];
     out   [label="result to the model:\n[web_fetch url · HTTP · type · chars a-b of N ·\nuntrusted page text]\npage text (our label cannot be forged)", color="#39c5cf", fillcolor="#0d2e2e"];
@@ -29,9 +31,12 @@ digraph web_egress {
     url -> deny [label="bad URL", color="#f85149"];
     url -> ask [label="ok"];
     ask -> jr [label="approved"];
+    url -> trusted [style=dashed, label="search"];
+    trusted -> jr [style=dashed, label="allowed"];
     ask -> deny [label="denied / timeout", color="#f85149", style=dashed];
     jr -> call -> res -> pin -> net;
     net -> read [label="bytes"]; pin -> read [style=invis];
     read -> redir -> res [label="next hop", style=dashed];
     read -> txt -> out;
+    call -> back [style=dashed, label="search"]; back -> res [style=dashed];
 }

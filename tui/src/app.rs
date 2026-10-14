@@ -480,6 +480,23 @@ impl App {
                     }
                 )));
             }
+            "web.searched" => {
+                let n = e
+                    .payload
+                    .get("results")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                self.items.push(Item::Note(format!(
+                    "web search: {} → {} result(s){}",
+                    e.s("backend"),
+                    n,
+                    if e.payload.get("cached").and_then(|v| v.as_bool()) == Some(true) {
+                        ", cached"
+                    } else {
+                        ""
+                    }
+                )));
+            }
             "web.unavailable" => self.items.push(Item::Warn(format!(
                 "web tools unavailable: {}",
                 e.s("reason")
@@ -1173,6 +1190,13 @@ mod picker_tests {
         );
         assert!(matches!(&a.items[1], Item::Note(t) if t.contains("cached")));
         assert!(matches!(&a.items[2], Item::Warn(t) if t.contains("helper not found")));
+        a.on_event(ev(
+            "web.searched",
+            serde_json::json!({"backend":"searxng","results":5,"cached":false}),
+        ));
+        assert!(
+            matches!(&a.items[3], Item::Note(t) if t.contains("searxng") && t.contains("5 result"))
+        );
         assert!(!a.run_args("x").contains(&"--web".to_string()));
         a.cfg.allow_web = true;
         assert!(a.run_args("x").contains(&"--web".to_string()));

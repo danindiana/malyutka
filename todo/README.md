@@ -12,6 +12,7 @@ Rationale and Hermes references: [`../docs/hermes-gap-analysis.md`](../docs/herm
 | P2 | [Docker / SSH backends](P2-exec-backends.md) | realm `erRemote` |
 | P2 | [Checkpoints / rollback](P2-checkpoints.md) | SPEC-001 |
 | P2 | [Trajectory export](P2-trajectories.md) | SPEC-003 |
+| P2 | [Web access extras](P2-web-extras.md) (disk cache, PDF, more backends, proxy) | SPEC-011 |
 | P3 | [Non-goals](NON-GOALS.md) | — |
 
 Delivered in 0.8.0 and removed from this list: skills ([SPEC-009](../spec/SPEC-009-skills.md)) and the MCP stdio client ([SPEC-010](../spec/SPEC-010-mcp-client.md)). Delivered in 0.7.0: the background `process` tool and resource limits ([SPEC-008](../spec/SPEC-008-processes-and-limits.md)). Delivered in 0.6.0: context compaction ([SPEC-006](../spec/SPEC-006-context-compaction.md)) and ranked session search ([SPEC-007](../spec/SPEC-007-session-search.md)).

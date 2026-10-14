@@ -64,7 +64,7 @@ with its AppArmor restriction active (see the table).
 
 | Evidence | Status |
 |---|---|
-| Offline suites: 298 unit/invariant/adversarial/latch/session/compaction/process/skills/MCP/web + 76 CLI integration | pass on Nim 1.6.14 and 2.2.12 locally (web fetch, unreleased); the Nim 1.6.14 matrix runs in CI |
+| Offline suites: 331 unit/invariant/adversarial/latch/session/compaction/process/skills/MCP/web + 80 CLI integration | pass on Nim 1.6.14 and 2.2.12 locally (web fetch and search, unreleased); the Nim 1.6.14 matrix runs in CI |
 | Native Nim 2.x build and tests | pass on CI (Nim 2.2.x, ubuntu-24.04, unprivileged runner) |
 | Nim 2.2.4 semantic check (`nim check`) | 0 diagnostics in Malyutka sources |
 | Live Ollama tool calling on a real host (qwen3.5:27b): single + multi-call, sandboxed shell, model-issued escape attempt, live SIGKILL + restart | **certified**: [record](docs/certification/M1.2-calisota-20261007.md) (Ubuntu 22.04, Nim 2.2.12, bwrap 0.6.1) |
@@ -171,7 +171,8 @@ malyutka mandate --approve:ID [--digest:CRC] | --revoke:ID | --resume:ID
 | `--base-url:URL` | e.g. `http://127.0.0.1:11434` (Ollama) or `http://127.0.0.1:8000` (vLLM) |
 | `--api-key:KEY` | prefer the `MALYUTKA_API_KEY` environment variable |
 | `--allow-shell` | enable the **sandboxed** shell capability |
-| `--web` | enable `web_fetch` (http/https page text; **every call asks**; URLs with credentials, private/metadata addresses and denylisted domains are denied outright). Runs through the sandboxed `malyutka_web` helper, so it needs `nimble build` to have produced both binaries and libssl installed; `<state>/web.json` holds the denylist and options ([SPEC-011](spec/SPEC-011-web-access.md)) |
+| `--web` | enable `web_fetch` (http/https page text) and, when a backend is configured, `web_search` (SearXNG, Brave or Tavily; **every call asks**, except a `trust: allow` SearXNG on loopback; URLs with credentials, private/metadata addresses and denylisted domains are denied outright). Runs through the sandboxed `malyutka_web` helper, so it needs `nimble build` to have produced both binaries and libssl installed; `<state>/web.json` holds the denylist, options and the search backend ([SPEC-011](spec/SPEC-011-web-access.md)) |
+| `--web-backend:NAME` | search backend `searxng`, `brave` or `tavily`, overriding `search.backend` in `web.json` (no fallback to another) |
 | `--skills` | enable `skills_list` / `skill_view` / `skill_save` over `<state>/skills/<name>/SKILL.md` (notes, never code; `skill_save` always asks; [SPEC-009](spec/SPEC-009-skills.md)) |
 | `--mcp` | connect the MCP stdio servers in `<state>/mcp.json` (strict file; servers sandboxed by default, per-server ceiling B0-B2, **every call asks**; `sandbox:false` needs `--unconfined-host`; [SPEC-010](spec/SPEC-010-mcp-client.md)) |
 | `--allow-process` | enable the background `process` tool (`start`/`poll`/`log`/`kill`/`list`, sandboxed, max `--max-processes:N` = 4; everything is killed when the run ends; [SPEC-008](spec/SPEC-008-processes-and-limits.md)) |

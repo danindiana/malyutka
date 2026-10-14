@@ -53,8 +53,12 @@ never falls back to the host. Each claim is pinned by a test in
   network access and no filesystem access (no workspace, no state directory, no `$HOME`). The harness stays free
   of TLS and of HTML parsing. What this does **not** defend against: a page that persuades the model to put
   something sensitive into a *search query* or a URL you then approve (read the approval prompt), and
-  prompt-injection text in pages (it is labelled and bounded, not removed). Hosted search APIs (later) receive
-  your queries and a key you chose to give them.
+  prompt-injection text in pages (it is labelled and bounded, not removed). Search is a disclosure too: a search query goes to the backend you configured. A hosted
+  backend (Brave, Tavily) receives every query you approve plus the key you gave it; a SearXNG you run yourself
+  forwards the query to whatever engines it is set up with. Only a SearXNG on loopback marked `trust: allow` runs
+  unasked. Queries shaped like credentials are denied outright, but a query is free text: read the approval.
+  There is no fallback between backends, and the key is never on a command line or in the journal.
+  Brave and Tavily support is verified against local fakes only.
 - Model output is untrusted data. Malyutka does not try to detect prompt
   injection; it limits what an injected instruction can do.
 

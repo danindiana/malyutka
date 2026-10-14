@@ -20,6 +20,10 @@ type
     denyDomains*, allowPrivate*: seq[string]
     timeoutSec*, maxChars*: int
     caFile*: string
+    search*: WebSearchCfg      ## the selected backend only
+    searchDefined*: bool       ## a "search" section was present
+    sections*: Table[string, WebSearchCfg]
+    backendName*: string
     disabled*: bool            ## the config file was unsafe or invalid: web access stays off
 
   WebState* = ref object
@@ -29,6 +33,11 @@ type
 proc newWebState*(): WebState = WebState(memo: initTable[string, JsonNode]())
 
 # ---- config ------------------------------------------------------------------------
+
+const
+  BraveUrl = "https://api.search.brave.com/res/v1/web/search"
+  TavilyUrl = "https://api.tavily.com/search"
+  SearchBackends = ["searxng", "brave", "tavily"]
 
 proc defaultWebConfig*(): WebConfig = WebConfig(timeoutSec: 20, maxChars: 15000)
 
@@ -70,6 +79,52 @@ proc parseWebConfig*(text: string): tuple[cfg: WebConfig, problems: seq[string]]
       if f.hasKey("maxChars"):
         if f["maxChars"].kind == JInt and f["maxChars"].getInt in MinChars .. MaxChars: result.cfg.maxChars = f["maxChars"].getInt
         else: result.problems.add "fetch.maxChars must be " & $MinChars & "-" & $MaxChars
+  if j.hasKey("search"):
+    let sj = j["search"]
+    if sj.kind != JObject:
+      result.problems.add "search must be an object"
+    else:
+      result.cfg.searchDefined = true
+      if sj.hasKey("backend"):
+        if sj["backend"].kind == JString and sj["backend"].getStr in SearchBackends: result.cfg.backendName = sj["backend"].getStr
+        else: result.problems.add "search.backend must be one of searxng, brave, tavily"
+      for name in SearchBackends:
+        if not sj.hasKey(name): continue
+        let b = sj[name]
+        var sc = WebSearchCfg(backend: name)
+        if b.kind != JObject:
+          result.problems.add "search." & name & " must be an object"
+          continue
+        for k, _ in b:
+          if k notin ["url", "apiKeyEnv", "trust"]: result.problems.add "search." & name & " has an unknown field '" & k & "'"
+        if b.hasKey("url"):
+          if b["url"].kind == JString: sc.url = b["url"].getStr.strip
+          else: result.problems.add "search." & name & ".url must be a string"
+        if name == "searxng":
+          if sc.url.len == 0: result.problems.add "search.searxng.url is required"
+          if b.hasKey("apiKeyEnv"): result.problems.add "search.searxng takes no apiKeyEnv"
+          if b.hasKey("trust"):
+            if b["trust"].kind == JString and b["trust"].getStr in ["ask", "allow"]: sc.trustAllow = b["trust"].getStr == "allow"
+            else: result.problems.add "search.searxng.trust must be \"ask\" or \"allow\""
+        else:
+          if b.hasKey("trust"): result.problems.add "search." & name & ".trust is not allowed: only a loopback SearXNG may run unasked"
+          if b.hasKey("apiKeyEnv") and b["apiKeyEnv"].kind == JString:
+            sc.keyEnv = b["apiKeyEnv"].getStr
+            var okName = sc.keyEnv.len in 1 .. 100 and sc.keyEnv[0] notin {'0'..'9'}
+            for c in sc.keyEnv:
+              if c notin {'A'..'Z', 'a'..'z', '0'..'9', '_'}: okName = false
+            if not okName: result.problems.add "search." & name & ".apiKeyEnv must be an environment variable NAME"
+          else: result.problems.add "search." & name & ".apiKeyEnv is required (the NAME of the variable holding the key)"
+          if sc.url.len == 0: sc.url = (if name == "brave": BraveUrl else: TavilyUrl)
+        if sc.url.len > 0:
+          let w = parseWebUrl(sc.url)
+          if not w.ok: result.problems.add "search." & name & ".url: " & w.why
+          elif w.target.contains('?') or sc.url.contains('#'): result.problems.add "search." & name & ".url must not carry a query string"
+          elif secretInUrl(sc.url).len > 0: result.problems.add "search." & name & ".url looks like it carries a credential"
+          elif name != "searxng" and not w.https: result.problems.add "search." & name & ".url must be https (a key never travels in clear)"
+          elif name == "searxng" and sc.trustAllow and not loopbackHost(w.host):
+            result.problems.add "search.searxng.trust \"allow\" is only accepted for a loopback host (127.0.0.0/8, ::1, localhost)"
+        result.cfg.sections[name] = sc
   if j.hasKey("caFile"):
     if j["caFile"].kind != JString: result.problems.add "caFile must be a string"
     elif j["caFile"].getStr.len > 0:
@@ -90,7 +145,17 @@ proc loadWebConfig*(stateDir: string): tuple[cfg: WebConfig, problems: seq[strin
 
 proc applyWebConfig*(cfg: var AgentConfig): seq[string] =
   ## Copies the operator's web settings into the run configuration (the policy layer reads them there).
-  let (w, problems) = loadWebConfig(cfg.stateDir)
+  var (w, problems) = loadWebConfig(cfg.stateDir)
+  cfg.webSearch = WebSearchCfg()
+  let want = if cfg.webBackend.len > 0: cfg.webBackend else: w.backendName
+  if cfg.webBackend.len > 0 and cfg.webBackend notin SearchBackends:
+    problems.add "--web-backend must be one of searxng, brave, tavily"
+    w.disabled = true
+  elif want.len > 0:
+    if w.sections.hasKey(want): cfg.webSearch = w.sections[want]
+    else:
+      problems.add "search backend '" & want & "' is selected but web.json has no search." & want & " section"
+      w.disabled = true
   cfg.webDeny = w.denyDomains
   cfg.webAllowPrivate = w.allowPrivate
   cfg.webTimeoutSec = w.timeoutSec
@@ -183,7 +248,8 @@ proc cutBoundary(s: string; pos: int): int =
 
 proc defang(text: string): string =
   ## Page text must not be able to forge our own label.
-  text.replace("[web_fetch", "[web-fetch").replace("untrusted page text", "untrusted-page-text")
+  text.replace("[web_fetch", "[web-fetch").replace("[web_search", "[web-search")
+      .replace("untrusted page text", "untrusted-page-text").replace("untrusted search results", "untrusted-search-results")
 
 proc strArg(args: JsonNode; k: string): string =
   if args.kind == JObject and args.hasKey(k) and args[k].kind == JString: args[k].getStr else: ""
@@ -231,3 +297,62 @@ proc runWebFetch*(state: WebState; args: JsonNode; cfg: AgentConfig): ToolResult
     truncated: stop < text.len, eventKind: "web.fetched",
     eventPayload: %*{"host": page{"host"}.getStr, "status": status, "bytes": page{"bytes"}.getInt,
                      "redirects": page{"redirects"}.getInt, "cached": cached})
+
+# ---- the web_search tool -----------------------------------------------------------------
+
+proc searchKey(sc: WebSearchCfg): tuple[key, problem: string] =
+  if sc.backend notin ["brave", "tavily"]: return
+  let v = getEnv(sc.keyEnv)
+  if v.len == 0: return ("", "environment variable " & sc.keyEnv & " is not set (it must hold the " & sc.backend & " API key)")
+  if v.len > 512 or v.strip != v or '\n' in v or '\r' in v or '\0' in v:
+    return ("", "environment variable " & sc.keyEnv & " does not look like an API key")
+  (v, "")
+
+proc searchRefused(msg: string): ToolResult =
+  ToolResult(ok: false, exitCode: 1, output: "ERROR: web_search failed: " & msg)
+
+proc runWebSearch*(state: WebState; args: JsonNode; cfg: AgentConfig): ToolResult =
+  let sc = cfg.webSearch
+  if sc.backend.len == 0:
+    return searchRefused("no search backend is configured (see search in <state>/web.json)")
+  let query = strArg(args, "query").strip
+  let why = queryProblem(query)
+  if why.len > 0:                                      # defence in depth: the policy layer already denies this
+    return searchRefused(why)
+  let limit = clamp(intArg(args, "limit", 5), 1, 20)
+  let memoKey = "search\x00" & sc.backend & "\x00" & $limit & "\x00" & query
+  var res: JsonNode
+  var cached = false
+  if state.memo.hasKey(memoKey):
+    res = state.memo[memoKey]
+    cached = true
+  else:
+    let (key, problem) = searchKey(sc)
+    if problem.len > 0: return searchRefused(problem)
+    var priv = cfg.webAllowPrivate
+    if sc.backend == "searxng":
+      let w = parseWebUrl(sc.url)
+      if w.ok: priv.add w.host                         # the operator named this instance explicitly
+    let req = %*{"op": "search", "backend": sc.backend, "base": sc.url, "query": query, "limit": limit,
+                 "apiKey": key, "timeoutSec": cfg.webTimeoutSec, "denyDomains": cfg.webDeny, "allowPrivate": priv,
+                 "caFile": (if cfg.webCaFile.len > 0: "/ca.pem" else: "")}
+    res = callHelper(req, cfg.webTimeoutSec, cfg.webCaFile, cfg.unconfinedHost)
+    if not res["ok"].getBool:
+      var msg = res{"error"}.getStr("unknown error")
+      if key.len > 0: msg = msg.replace(key, "[key]")
+      return searchRefused(msg)
+    if state.order.len >= MemoEntries:
+      state.memo.del(state.order[0])
+      state.order.delete(0)
+    state.memo[memoKey] = res
+    state.order.add memoKey
+  var body = "[web_search " & sc.backend & " · " & $res["results"].len & " results" & (if cached: " · cached" else: "") &
+             " · untrusted search results]"
+  if res["results"].len == 0: body.add "\nno results"
+  var n = 0
+  for h in res["results"]:
+    inc n
+    body.add "\n" & $n & ". " & defang(h{"title"}.getStr) & "\n   " & defang(h{"url"}.getStr)
+    if h{"description"}.getStr.len > 0: body.add "\n   " & defang(h{"description"}.getStr)
+  ToolResult(ok: true, exitCode: 0, output: body, eventKind: "web.searched",
+    eventPayload: %*{"backend": sc.backend, "results": res["results"].len, "cached": cached})

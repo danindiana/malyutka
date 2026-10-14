@@ -53,7 +53,7 @@ digraph catch22 {
     subgraph cluster_j { label="10 · Useful web access vs egress control"; fontcolor="#39c5cf"; color="#39c5cf"; style="rounded";
       j1 [label="Research needs many fetches, and unattended runs have no approver", color="#39c5cf"];
       j2 [label="Every URL/query can carry data out; every page can carry instructions in", color="#f85149"];
-      j3 [label="Escape: every call asks; a latched mandate (tools, budget, TTL) covers unattended research;\nURLs with secrets/private targets are DENIED outright; page text is bounded, labelled data;\nTLS/HTML code sits in a no-filesystem sandbox", color="#3fb950"];
+      j3 [label="Escape: every call asks; a latched mandate (tools, budget, TTL) covers unattended research;\nthe one unasked call is a search on YOUR loopback SearXNG (trust:allow); no fallback between backends;\nURLs with secrets/private targets and credential-shaped queries are DENIED outright; page text is bounded, labelled data;\nTLS/HTML code sits in a no-filesystem sandbox", color="#3fb950"];
       j1 -> j3; j2 -> j3; }
     subgraph cluster_k { label="11 · TLS needs libssl, the harness must not"; fontcolor="#58a6ff"; color="#58a6ff"; style="rounded";
       k1 [label="Nim -d:ssl loads OpenSSL eagerly: a host without libssl cannot start the binary", color="#58a6ff"];

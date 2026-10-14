@@ -59,7 +59,7 @@
 </g>
 <g id="clust10" class="cluster">
 <title>cluster_j</title>
-<path fill="#0d1117" stroke="#39c5cf" d="M5340,-178.5C5340,-178.5 6280,-178.5 6280,-178.5 6286,-178.5 6292,-184.5 6292,-190.5 6292,-190.5 6292,-355 6292,-355 6292,-361 6286,-367 6280,-367 6280,-367 5340,-367 5340,-367 5334,-367 5328,-361 5328,-355 5328,-355 5328,-190.5 5328,-190.5 5328,-184.5 5334,-178.5 5340,-178.5"/>
+<path fill="#0d1117" stroke="#39c5cf" d="M5340,-172C5340,-172 6280,-172 6280,-172 6286,-172 6292,-178 6292,-184 6292,-184 6292,-355 6292,-355 6292,-361 6286,-367 6280,-367 6280,-367 5340,-367 5340,-367 5334,-367 5328,-361 5328,-355 5328,-355 5328,-184 5328,-184 5328,-178 5334,-172 5340,-172"/>
 <text text-anchor="middle" x="5810" y="-347" font-family="Helvetica,sans-Serif" font-size="20.00" fill="#39c5cf">10 · Useful web access vs egress control</text>
 </g>
 <g id="clust11" class="cluster">
@@ -378,16 +378,17 @@
 <!-- j3 -->
 <g id="node31" class="node">
 <title>j3</title>
-<path fill="#161b22" stroke="#3fb950" stroke-width="2" d="M6091,-245.5C6091,-245.5 5529,-245.5 5529,-245.5 5523,-245.5 5517,-239.5 5517,-233.5 5517,-233.5 5517,-198.5 5517,-198.5 5517,-192.5 5523,-186.5 5529,-186.5 5529,-186.5 6091,-186.5 6091,-186.5 6097,-186.5 6103,-192.5 6103,-198.5 6103,-198.5 6103,-233.5 6103,-233.5 6103,-239.5 6097,-245.5 6091,-245.5"/>
-<text text-anchor="middle" x="5810" y="-225.9" font-family="Helvetica,sans-Serif" font-size="12.00" fill="#e6edf3">Escape: every call asks; a latched mandate (tools, budget, TTL) covers unattended research;</text>
-<text text-anchor="middle" x="5810" y="-212.9" font-family="Helvetica,sans-Serif" font-size="12.00" fill="#e6edf3">URLs with secrets/private targets are DENIED outright; page text is bounded, labelled data;</text>
-<text text-anchor="middle" x="5810" y="-199.9" font-family="Helvetica,sans-Serif" font-size="12.00" fill="#e6edf3">TLS/HTML code sits in a no&#45;filesystem sandbox</text>
+<path fill="#161b22" stroke="#3fb950" stroke-width="2" d="M6178,-252C6178,-252 5442,-252 5442,-252 5436,-252 5430,-246 5430,-240 5430,-240 5430,-192 5430,-192 5430,-186 5436,-180 5442,-180 5442,-180 6178,-180 6178,-180 6184,-180 6190,-186 6190,-192 6190,-192 6190,-240 6190,-240 6190,-246 6184,-252 6178,-252"/>
+<text text-anchor="middle" x="5810" y="-232.4" font-family="Helvetica,sans-Serif" font-size="12.00" fill="#e6edf3">Escape: every call asks; a latched mandate (tools, budget, TTL) covers unattended research;</text>
+<text text-anchor="middle" x="5810" y="-219.4" font-family="Helvetica,sans-Serif" font-size="12.00" fill="#e6edf3">the one unasked call is a search on YOUR loopback SearXNG (trust:allow); no fallback between backends;</text>
+<text text-anchor="middle" x="5810" y="-206.4" font-family="Helvetica,sans-Serif" font-size="12.00" fill="#e6edf3">URLs with secrets/private targets and credential&#45;shaped queries are DENIED outright; page text is bounded, labelled data;</text>
+<text text-anchor="middle" x="5810" y="-193.4" font-family="Helvetica,sans-Serif" font-size="12.00" fill="#e6edf3">TLS/HTML code sits in a no&#45;filesystem sandbox</text>
 </g>
 <!-- j1&#45;&gt;j3 -->
 <g id="edge20" class="edge">
 <title>j1&#45;&gt;j3</title>
-<path fill="none" stroke="#8b949e" stroke-width="1.5" d="M6011.7,-292.94C5978.93,-280.61 5933.69,-263.57 5894.36,-248.76"/>
-<polygon fill="#8b949e" stroke="#8b949e" stroke-width="1.5" points="5895.06,-245.85 5886.06,-245.64 5892.97,-251.42 5895.06,-245.85"/>
+<path fill="none" stroke="#8b949e" stroke-width="1.5" d="M6011.7,-292.94C5983.59,-282.36 5946.3,-268.32 5911.44,-255.19"/>
+<polygon fill="#8b949e" stroke="#8b949e" stroke-width="1.5" points="5912.11,-252.27 5903.11,-252.06 5910.01,-257.84 5912.11,-252.27"/>
 </g>
 <!-- j2 -->
 <g id="node30" class="node">
@@ -398,8 +399,8 @@
 <!-- j2&#45;&gt;j3 -->
 <g id="edge21" class="edge">
 <title>j2&#45;&gt;j3</title>
-<path fill="none" stroke="#8b949e" stroke-width="1.5" d="M5614.02,-292.94C5645.86,-280.61 5689.82,-263.57 5728.03,-248.76"/>
-<polygon fill="#8b949e" stroke="#8b949e" stroke-width="1.5" points="5729.24,-251.48 5736.1,-245.64 5727.09,-245.94 5729.24,-251.48"/>
+<path fill="none" stroke="#8b949e" stroke-width="1.5" d="M5614.02,-292.94C5641.33,-282.36 5677.56,-268.32 5711.44,-255.19"/>
+<polygon fill="#8b949e" stroke="#8b949e" stroke-width="1.5" points="5712.68,-257.9 5719.53,-252.06 5710.53,-252.35 5712.68,-257.9"/>
 </g>
 <!-- k1 -->
 <g id="node32" class="node">

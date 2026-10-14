@@ -50,6 +50,13 @@ type
     b0ReadOnly = "B0", b1LocalReversible = "B1", b2BroadWorkspace = "B2",
     b3External = "B3", b4Privileged = "B4"
 
+  WebSearchCfg* = object
+    ## The ONE search backend the operator selected (from <state>/web.json). Empty backend = no search.
+    backend*: string            ## "" | searxng | brave | tavily
+    url*: string                ## endpoint; keyed backends: https only, the only host the key is sent to
+    keyEnv*: string             ## name of the environment variable holding the key (never the key)
+    trustAllow*: bool           ## searxng only, and only honoured for a loopback host
+
   Verdict* = enum
     ## Ordinal order IS precedence: the lowest verdict any layer returns wins.
     vDeny = "DENY", vAsk = "ASK", vAllow = "ALLOW"
@@ -93,6 +100,8 @@ type
     webTimeoutSec*: int
     webMaxChars*: int
     webCaFile*: string
+    webSearch*: WebSearchCfg
+    webBackend*: string         ## --web-backend override of web.json's search.backend
     allowSkills*: bool          ## skills_list / skill_view / skill_save (SPEC-009)
     allowMcp*: bool             ## MCP stdio client (SPEC-010)
     allowProcess*: bool         ## enable the background `process` tool
