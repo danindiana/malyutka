@@ -9,9 +9,7 @@
 [![Version](https://img.shields.io/github/v/tag/danindiana/malyutka?label=version&color=d29922)](CHANGELOG.md)
 [![Milestone](https://img.shields.io/badge/M1.2-certified%20(Ubuntu%2022.04)-3fb950)](docs/certification/M1.2-calisota-20261007.md)
 
-**A small, Linux-native, model-neutral agent harness written in Nim, built so
-that a recoverable model mistake cannot become an unrecoverable systems
-mistake.**
+**A small, Linux-native, model-neutral agent harness written in Nim.**
 
 > Small kernel. Replaceable edges. **Model proposes; policy disposes.**
 
