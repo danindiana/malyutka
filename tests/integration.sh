@@ -559,5 +559,18 @@ else
   echo "  [SKIP] web: malyutka_web is not built next to $BIN"
 fi
 
+
+# bare `malyutka` / `malyutka tui` hand over to the TUI (stub binary), and piped bare `malyutka` still prints the help
+cat > "$WORK/stub-tui.sh" <<'STUB'
+#!/bin/sh
+echo "TUI-STUB bin=$MALYUTKA_BIN args=$*"
+STUB
+chmod +x "$WORK/stub-tui.sh"
+out=$(MALYUTKA_TUI="$WORK/stub-tui.sh" "$BIN" tui --skin ares 2>&1)
+case "$out" in *"TUI-STUB bin="*"malyutka"*" args=--skin ares"*) ok "tui: 'malyutka tui' execs the TUI with MALYUTKA_BIN set and the options passed through";; *) bad "malyutka tui: $out";; esac
+"$BIN" 2>&1 < /dev/null | grep -q '^Usage:' && ok "tui: bare malyutka without a terminal prints the help (scripts are unaffected)" || bad "bare malyutka off-tty"
+out=$(MALYUTKA_TUI=/nonexistent/tui "$BIN" tui 2>&1)
+case "$out" in *"not built"*"Usage:"*) ok "tui: a missing TUI falls back to the help with a build hint";; *) bad "missing tui: $out";; esac
+
 echo "integration: $pass passed, $fail failed"
 [ $fail -eq 0 ]

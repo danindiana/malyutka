@@ -12,6 +12,8 @@
   **SearXNG on loopback** with `trust: "allow"`, re-derived from the live config at every decision; the config
   parser rejects `trust: "allow"` for any other host or backend. Credential-shaped queries are DENY (no approver).
 - **Keyless default**: `malyutka web-setup` starts a loopback-only SearXNG in docker with json enabled and writes `web.json`; with no `search` config the default backend is that local instance (asking on every call until `trust: allow` is written). DuckDuckGo was rejected (bot challenge, no API).
+- **TUI**: web tools are on by default (`--no-web` turns them off; every call still asks), a startup note appears when no local SearXNG answers and no `web.json` exists, and `/websetup` runs `malyutka web-setup` in the background and reports in the transcript.
+- **Bare `malyutka` opens the TUI** on a terminal (and `malyutka tui [options]` does so explicitly), exec'ing it with `MALYUTKA_BIN` set to the running binary; off a terminal, or without a built TUI, it prints the help as before.
 - `malyutka doctor` shows the configured search backend; `web.searched` event.
 - Tests: 35 new (request building, answer cleaning, fake backends over http and https, key handling, config
   strictness, the exemption table, the helper end to end), 30 mutants. **Brave and Tavily are verified against local

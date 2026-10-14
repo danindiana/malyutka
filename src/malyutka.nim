@@ -1,4 +1,4 @@
-import std/[asyncdispatch, json, os, parseopt, strutils, tables]
+import std/[asyncdispatch, json, os, parseopt, posix, strutils, tables, terminal]
 import malyutka/[types, provider, core, session, events, config, sandbox, journal, approval, memory, latch, tools, web, policy, websetup]
 
 const Version = "0.8.0"
@@ -8,6 +8,8 @@ proc usage() =
 
 Usage:
   malyutka run [options] <task>
+  malyutka                             On a terminal: open the TUI (needs the tui/ build); otherwise this help
+  malyutka tui [tui options]           Open the TUI explicitly
   malyutka doctor
   malyutka web-setup [--port:N] [--ask]  Start a local SearXNG in docker (loopback only, no key) and write web.json
   malyutka sessions [--json]           List saved sessions (newest first)
@@ -331,9 +333,36 @@ proc doctor() =
     echo "note: --allow-shell will refuse to run until the sandbox probe passes."
     quit(3)
 
+proc findTui(): string =
+  ## The Rust TUI (tui/): $MALYUTKA_TUI, next to this binary, the in-repo release/debug build, then PATH.
+  let env = getEnv("MALYUTKA_TUI")
+  if env.len > 0: return (if fileExists(env): env else: "")
+  let dir = getAppDir()
+  for c in [dir / "malyutka-tui", dir / "tui" / "target" / "release" / "malyutka-tui",
+            dir / "tui" / "target" / "debug" / "malyutka-tui"]:
+    if fileExists(c): return c
+  findExe("malyutka-tui")
+
+proc launchTui(args: seq[string]) =
+  ## Replaces this process with the TUI, which drives this very binary (MALYUTKA_BIN).
+  let tui = findTui()
+  if tui.len == 0:
+    stderr.writeLine "malyutka: the TUI is not built (cd tui && cargo build --release), so here is the command-line help:\n"
+    usage()
+    quit(0)
+  putEnv("MALYUTKA_BIN", getAppFilename())
+  var argv = allocCStringArray(@[tui] & args)
+  discard execv(cstring(tui), argv)
+  stderr.writeLine "malyutka: cannot start " & tui & ": " & $strerror(errno)
+  quit(1)
+
 proc main() =
-  if paramCount() == 0: usage(); quit(0)
+  if paramCount() == 0:
+    # bare `malyutka` on a terminal opens the TUI; piped or redirected, it prints the help as before
+    if isatty(stdin) and isatty(stdout): launchTui(@[])
+    usage(); quit(0)
   let cmd = paramStr(1)
+  if cmd == "tui": launchTui(commandLineParams()[1 .. ^1])
   if cmd == "doctor": doctor(); quit(0)
   if cmd == "web-setup":
     var port = DefaultSearxPort
