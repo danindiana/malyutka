@@ -18,6 +18,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     ("/ctx", "show or set the context window in tokens"),
     ("/search", "ranked search over saved sessions"),
+    (
+        "/websetup",
+        "start a local SearXNG (docker) so web_search works, no key",
+    ),
     ("/mcp", "MCP servers seen in this session"),
     ("/ps", "background processes started by the agent"),
     ("/mandates", "list commitment-latch mandates (read-only)"),

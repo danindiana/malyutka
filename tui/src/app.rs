@@ -245,6 +245,7 @@ impl App {
     pub fn on_msg(&mut self, m: Msg) {
         match m {
             Msg::Ev(e) => self.on_event(e),
+            Msg::Note(t) => self.note(t),
             Msg::Stderr(l) => {
                 if let Some(t) = l.strip_prefix("FINAL:") {
                     if !self.final_seen {
@@ -1174,6 +1175,13 @@ mod picker_tests {
         a.cfg.allow_skills = true;
         let args = a.run_args("x");
         assert!(args.contains(&"--mcp".to_string()) && args.contains(&"--skills".to_string()));
+    }
+
+    #[test]
+    fn background_notes_become_transcript_notes() {
+        let mut a = app();
+        a.on_msg(Msg::Note("wrote web.json".into()));
+        assert!(matches!(a.items.last(), Some(Item::Note(t)) if t == "wrote web.json"));
     }
 
     #[test]

@@ -26,7 +26,8 @@ USAGE: malyutka-tui [OPTIONS]
   --allow-shell           allow the sandboxed shell tool
   --allow-files           allow read_file/search_files/write_file/patch/todo (workspace only)
   --skills                enable skills_list / skill_view / skill_save (save asks)
-  --web                   enable web_fetch (sandboxed helper; every call asks; needs malyutka_web + libssl)
+  --web / --no-web        web_fetch + web_search (default ON in the TUI; every call asks; needs malyutka_web + libssl;
+                          /websetup starts a local SearXNG so search needs no key)
   --mcp                   connect the MCP servers in <state>/mcp.json (sandboxed, every call asks)
   --allow-process         enable the background process tool (sandboxed, max 4)
   --allow-memory          enable the memory tool and inject memory.md
@@ -46,7 +47,7 @@ fn parse_args() -> Result<(Config, String), String> {
         allow_process: false,
         allow_skills: false,
         allow_mcp: false,
-        allow_web: false,
+        allow_web: true, // every web call still asks; --no-web turns the tools off
         personality: String::new(),
         context_window: None,
         compress_next: false,
@@ -74,6 +75,7 @@ fn parse_args() -> Result<(Config, String), String> {
             "--skills" => cfg.allow_skills = true,
             "--mcp" => cfg.allow_mcp = true,
             "--web" => cfg.allow_web = true,
+            "--no-web" => cfg.allow_web = false,
             "--personality" => cfg.personality = val("--personality")?,
             "--context-window" => {
                 cfg.context_window = Some(
@@ -217,6 +219,10 @@ fn run_command(app: &mut App, line: &str, tx: &Sender<Msg>) {
         "/search" => {
             let o = runner::capture(&app.cfg.bin, &["sessions", &format!("--search:{arg}")]);
             app.note(o.trim_end().to_string());
+        }
+        "/websetup" => {
+            app.note("starting a local SearXNG with docker (first run pulls the image; this can take a minute)...");
+            runner::background_notes(&app.cfg.bin, &["web-setup"], tx.clone());
         }
         "/mcp" => {
             if app.mcp.is_empty() {
@@ -664,6 +670,9 @@ fn main() {
     });
     let doctor = doctor_info(&cfg.bin);
     let mut app = App::new(cfg, skin, doctor);
+    if app.cfg.allow_web && !state_dir().join("web.json").exists() && !runner::loopback_up(18888) {
+        app.note("web search: no SearXNG found at 127.0.0.1:18888. Type /websetup to start one (needs docker; no account or key), or configure a backend in web.json.");
+    }
     let (tx, rx) = mpsc::channel();
     let mut term = ratatui::init();
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
