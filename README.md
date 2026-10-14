@@ -66,7 +66,7 @@ with its AppArmor restriction active (see the table).
 
 | Evidence | Status |
 |---|---|
-| Offline suites: 199 unit/invariant/adversarial/latch/session/compaction/process + 59 CLI integration | pass on Nim 2.2.12 locally for 0.7.0; the Nim 1.6.14 matrix runs in CI |
+| Offline suites: 233 unit/invariant/adversarial/latch/session/compaction/process/skills/MCP + 68 CLI integration | pass on Nim 2.2.12 locally for 0.8.0; the Nim 1.6.14 matrix runs in CI |
 | Native Nim 2.x build and tests | pass on CI (Nim 2.2.x, ubuntu-24.04, unprivileged runner) |
 | Nim 2.2.4 semantic check (`nim check`) | 0 diagnostics in Malyutka sources |
 | Live Ollama tool calling on a real host (qwen3.5:27b): single + multi-call, sandboxed shell, model-issued escape attempt, live SIGKILL + restart | **certified**: [record](docs/certification/M1.2-calisota-20261007.md) (Ubuntu 22.04, Nim 2.2.12, bwrap 0.6.1) |
@@ -173,6 +173,8 @@ malyutka mandate --approve:ID [--digest:CRC] | --revoke:ID | --resume:ID
 | `--base-url:URL` | e.g. `http://127.0.0.1:11434` (Ollama) or `http://127.0.0.1:8000` (vLLM) |
 | `--api-key:KEY` | prefer the `MALYUTKA_API_KEY` environment variable |
 | `--allow-shell` | enable the **sandboxed** shell capability |
+| `--skills` | enable `skills_list` / `skill_view` / `skill_save` over `<state>/skills/<name>/SKILL.md` (notes, never code; `skill_save` always asks; [SPEC-009](spec/SPEC-009-skills.md)) |
+| `--mcp` | connect the MCP stdio servers in `<state>/mcp.json` (strict file; servers sandboxed by default, per-server ceiling B0-B2, **every call asks**; `sandbox:false` needs `--unconfined-host`; [SPEC-010](spec/SPEC-010-mcp-client.md)) |
 | `--allow-process` | enable the background `process` tool (`start`/`poll`/`log`/`kill`/`list`, sandboxed, max `--max-processes:N` = 4; everything is killed when the run ends; [SPEC-008](spec/SPEC-008-processes-and-limits.md)) |
 | `--cgroups:auto\|require\|off` | memory/task limits for sandboxed commands via a transient `systemd-run --user --scope` (default `auto`: applied if the probe passes, otherwise visibly skipped; `require` refuses the run; `--limit-memory:MB` default 2048, `--limit-pids:N` default 512, `0` = none) |
 | `--context-window:N` | model context size in tokens (default 32768, 0 = off); above 75 % the oldest turns are summarised and archived ([SPEC-006](spec/SPEC-006-context-compaction.md)). `--compress` compacts the resumed history once before the first call |
@@ -481,10 +483,10 @@ CHANGELOG.md                every release, every audit finding
 |---|---|
 | **M1 / M1.1** ✓ | guidance loop, OpenAI-compatible providers, confined shell, journal |
 | **M1.2** ✓ | integration certification on a real host ([record](docs/certification/M1.2-calisota-20261007.md)); open: 24.04 + AppArmor restriction |
-| **M2** (partial) | Linux capability layer: **files, search, patch, `todo`, ASK approvals ✓ (0.4.0), commitment latch ✓**; bounded background processes still open |
+| **M2** ✓ | Linux capability layer: files, search, patch, `todo`, ASK approvals (0.4.0), commitment latch, background processes (0.7.0), **MCP client (0.8.0)** |
 | M3 (partial) | isolation, deepened: **memory/task limits via a systemd user scope, background processes ✓ (0.7.0)**; per-capability scopes, seccomp, credential broker still open |
 | M4 (partial) | ledger: **resumable runs ✓ (0.5.0, transcript-level, never replays effects)**; content-addressed artifacts and replay still open |
-| M5 (partial) | context: **token estimate, compaction, ranked session search ✓ (0.6.0)**; skills still open |
+| **M5** ✓ | context: token estimate, compaction, ranked session search (0.6.0); **skills (0.8.0)** |
 | M6 | delegation: isolated children with `capabilities(child) ⊆ capabilities(parent)` and budgets |
 | M7 | metacritic: replace `maxSteps` with an EVoC/hysteresis controller (PRODUCTIVE → SUSPECT → PLATEAU; CONTINUE / REDIRECT / DELEGATE / COMPACT / HALT) |
 | M8 | harness laboratory: interchangeable controllers and models, useful work per token and per GPU-hour |

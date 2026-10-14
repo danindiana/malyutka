@@ -1,6 +1,6 @@
 digraph roadmap {
     graph [bgcolor="#0d1117", rankdir=LR, fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20,
-           label="07 · Roadmap: isolation precedes capability (status: M1.2 certified; M2 + M4-lite done in 0.4.0/0.5.0)\ngreen: done · amber: in progress · grey: planned · violet: research goals (planned)\n ", nodesep=0.25, ranksep=0.35];
+           label="07 · Roadmap: isolation precedes capability (status: M1.2 certified; M2, M4-lite, M5 done; M3 partial)\ngreen: done · amber: in progress · grey: planned · violet: research goals (planned)\n ", nodesep=0.25, ranksep=0.35];
     node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2,
            margin="0.18,0.12", fillcolor="#161b22", fontsize=11];
     edge  [color="#8b949e", penwidth=1.4, arrowsize=0.8];
@@ -10,7 +10,7 @@ digraph roadmap {
     m2  [label="M2\nLinux capability layer\nfiles · search · patch\nASK approvals\n✓ 0.4.0 (processes open)", color="#3fb950"];
     m3  [label="M3\nisolation, deepened\nlimits via systemd scope ✓ 0.7.0\nseccomp · credential broker open", color="#d29922"];
     m4  [label="M4\nledger\nresumable runs\nreplay\nresume ✓ 0.5.0 (artifacts open)", color="#d29922"];
-    m5  [label="M5\ncontext\ncompaction\nskills", color="#30363d"];
+    m5  [label="M5\ncontext\ncompaction · skills\n✓ 0.6.0 / 0.8.0", color="#3fb950"];
     m6  [label="M6\ndelegation\nchild ⊆ parent\nbudgets", color="#30363d"];
     m7  [label="M7\nmetacritic\nEVoC · hysteresis\nHALT / REDIRECT", color="#bc8cff"];
     m8  [label="M8\nharness laboratory\nuseful work per\ntoken / GPU-hour", color="#bc8cff"];

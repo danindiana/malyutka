@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.0 skills and an MCP client
+
+- **Skills** (`--skills`): `skills_list`, `skill_view`, `skill_save` over `<state>/skills/<name>/SKILL.md`
+  (agentskills.io frontmatter). Skills are data: text reaches the model only as a tool result, nothing in
+  them is executed or loaded as configuration, the system prompt only gains one fixed sentence. Strict reader
+  (no symlinks, operator-owned, not group/world-writable); `skill_save` always asks, is journaled, writes a
+  0600 file in a 0700 directory under the state dir only.
+- **MCP stdio client** (`--mcp`, `<state>/mcp.json`): servers run sandboxed by default (same bwrap broker,
+  no network, scrubbed environment plus an `envAllow` list); `sandbox:false` needs `--unconfined-host`.
+  JSON-RPC 2.0 with bounded lines (1 MiB), results (64 KiB), descriptions, schemas and time; timeouts and
+  protocol violations kill the server and later calls fail cleanly. Tools are `mcp_<server>_<tool>` with the
+  operator's ceiling (B0-B2) and realm `external`; the new `mcp.ask` layer makes every call ASK (mandate,
+  approver or deny) except `trust: allow` on a B0 server. Invariant **I17**. Events `mcp.connected`,
+  `mcp.failed`, `mcp.refused`. Servers die with the run, also on exceptions.
+- TUI: `--skills`, `--mcp`, `/tools skills|mcp`, `/mcp`, 📚/🔌 icons, mcp events in the transcript.
+- Tests: `tests/test_skills.nim` (12; 7 mutants killed, 1 equivalent documented), `tests/test_mcp.nim`
+  (22; 14 mutants killed) against `tests/fake_mcp.py` (hang, flood, bad JSON, wrong ids, server requests,
+  name collisions, lying schemas, exits mid-call); integration 15; live battery gains `skills` and `mcp`.
+
 ## 0.7.0 background processes and resource limits (M3-lite)
 
 - **`process` tool** (`--allow-process`, `--max-processes:N`): `start`/`poll`/`log`/`kill`/`list` over the

@@ -4,7 +4,7 @@
 ## the model (removing a capability removes it from the model's context).
 
 import std/[json, tables]
-import ./[types, sandbox, filetools, memory, latch, process]
+import ./[types, sandbox, filetools, memory, latch, process, skills, mcp]
 export filetools.ToolProc
 
 type
@@ -85,11 +85,81 @@ proc fileSpec(name, description: string; parameters: JsonNode; ceiling: EffectCl
     effectOf: proc(args: JsonNode): EffectClass = ceiling,
     run: run)
 
+var mcpEventQueue: seq[tuple[kind: string, payload: JsonNode]]
+
+proc drainMcpEvents*(): seq[tuple[kind: string, payload: JsonNode]] =
+  ## Events raised while connecting MCP servers (toolsFor cannot emit); the run loop
+  ## emits them right after run.start.
+  result = mcpEventQueue
+  mcpEventQueue.setLen(0)
+
+proc mcpSpec(conn: McpConn; sv: McpServerCfg; tool: McpTool; fullName: string): ToolSpec =
+  ## A proc, not inline in a loop: each spec's closures must own THEIR connection, tool
+  ## name and ceiling (the loop-variable capture bug that bit the file tools).
+  let ceiling = sv.maxEffect
+  let remote = tool.name
+  ToolSpec(
+    capability: Capability(name: fullName, realm: erExternal, maxEffect: ceiling,
+                           askExempt: sv.trust == "allow" and ceiling == b0ReadOnly),
+    description: "[MCP " & sv.name & "] " & tool.description,
+    parameters: tool.schema,
+    effectOf: proc(args: JsonNode): EffectClass = ceiling,
+    run: proc(args: JsonNode; cfg: AgentConfig): ToolResult = callTool(conn, remote, args),
+    shutdown: proc(): int = (conn.kill(); 0))
+
+proc registerMcp(reg: var ToolRegistry; cfg: AgentConfig) =
+  let (servers, problems) = loadMcpConfig(cfg.stateDir)
+  for p in problems:
+    mcpEventQueue.add (kind: "mcp.failed", payload: %*{"server": "(config)", "reason": p})
+  for sv in servers:
+    if not sv.sandbox and not cfg.unconfinedHost:
+      mcpEventQueue.add (kind: "mcp.failed", payload: %*{"server": sv.name,
+        "reason": "sandbox:false needs the --unconfined-host waiver"})
+      continue
+    if not sv.sandbox:
+      mcpEventQueue.add (kind: "confinement.waived", payload: %*{"tool": "mcp:" & sv.name,
+        "ceiling": $sv.maxEffect})
+    var conn: McpConn
+    try: conn = connect(sv, cfg)
+    except CatchableError as e:
+      mcpEventQueue.add (kind: "mcp.failed", payload: %*{"server": sv.name, "reason": e.msg})
+      continue
+    var registered = 0
+    for why in conn.dropped:
+      mcpEventQueue.add (kind: "mcp.refused", payload: %*{"server": sv.name, "tool": "", "reason": why})
+    for t in conn.tools:
+      let sn = sanitizeToolName(t.name)
+      let full = "mcp_" & sv.name & "_" & sn
+      if sn.len == 0 or full.len > 64:
+        mcpEventQueue.add (kind: "mcp.refused", payload: %*{"server": sv.name, "tool": t.name,
+          "reason": "unusable tool name"})
+      elif reg.hasKey(full):
+        mcpEventQueue.add (kind: "mcp.refused", payload: %*{"server": sv.name, "tool": t.name,
+          "reason": "name already registered: " & full})
+      else:
+        reg[full] = mcpSpec(conn, sv, t, full)
+        inc registered
+    mcpEventQueue.add (kind: "mcp.connected", payload: %*{"server": sv.name, "tools": registered,
+      "sandbox": sv.sandbox})
+    if registered == 0: conn.kill()
+
 proc toolsFor*(cfg: AgentConfig): ToolRegistry =
   result = initOrderedTable[string, ToolSpec]()
   result["echo"] = echoSpec()
   if cfg.allowShell:
     result["shell"] = shellSpec(cfg)
+  if cfg.allowSkills and cfg.stateDir.len > 0:
+    result["skills_list"] = fileSpec("skills_list",
+      "List the available skills (reusable notes): name and description.",
+      %*{"type": "object", "properties": {}}, b0ReadOnly, runSkillsList)
+    result["skill_view"] = fileSpec("skill_view",
+      "Read one skill's SKILL.md by name. A skill is a note, not a permission.",
+      %*{"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+      b0ReadOnly, runSkillView)
+    result["skill_save"] = fileSpec("skill_save",
+      "Save or replace a skill. content must start with a frontmatter block (--- name: <name> / description: <one line> ---). Needs operator approval.",
+      %*{"type": "object", "properties": {"name": {"type": "string"}, "content": {"type": "string"}},
+         "required": ["name", "content"]}, b2BroadWorkspace, runSkillSave)
   if cfg.allowProcess:
     let mgr = newProcManager(cfg.maxProcesses)
     result["process"] = ToolSpec(
@@ -103,6 +173,7 @@ proc toolsFor*(cfg: AgentConfig): ToolRegistry =
       effectOf: effectOfProcess,
       run: proc(args: JsonNode; c: AgentConfig): ToolResult = runProcess(mgr, args, c),
       shutdown: proc(): int = shutdown(mgr))
+  if cfg.allowMcp and cfg.stateDir.len > 0: registerMcp(result, cfg)
   if cfg.allowMemory and cfg.stateDir.len > 0:
     result["memory"] = fileSpec("memory",
       "Persistent notes that survive across sessions (max 8 KiB). " &

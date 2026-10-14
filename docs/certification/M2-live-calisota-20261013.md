@@ -118,3 +118,19 @@ Host facts recorded for the limits backend: cgroup v2; `user@1000.service` deleg
 `systemd-run --user --scope`, which works here (verified: fork loop capped with `Cannot fork`, a 900 MB
 allocation killed under a 200 MB limit and succeeding with no limit). Not verified: CI runners and containers
 (the code degrades visibly; CI exercises the degraded path and skips the real-scope tests if they cannot run).
+
+## Addendum (Round 4, v0.8.0): skills and mcp checks
+
+Two more checks. `skills`: the model saves a skill with `skill_save` (an approval request is answered `once` over the
+stdin channel); the file must exist at `<state>/skills/deploy/SKILL.md` with mode 0600 and nothing may land in the
+workspace. `mcp`: a sandboxed `tests/fake_mcp.py` server is configured in `<state>/mcp.json`; the model must call
+`mcp_s_add`, the harness must have asked first (`approval.request` for that tool), the answer must reach the model, and
+no server process carrying the unique tag may survive the run.
+
+| Model | skills | mcp |
+|---|---|---|
+| qwen3.5:9b | PASS | PASS |
+| gpt-oss:20b | PASS | PASS |
+
+Only these two models were run for these checks. The first `mcp` run failed for both models because the check itself did
+not create the state directory before writing `mcp.json` (no server was configured, so none connected); fixed and rerun.

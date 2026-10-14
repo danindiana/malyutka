@@ -1,7 +1,7 @@
 import std/[asyncdispatch, json, os, parseopt, strutils, tables]
 import malyutka/[types, provider, core, session, events, config, sandbox, journal, approval, memory, latch, tools]
 
-const Version = "0.7.0"
+const Version = "0.8.0"
 
 proc usage() =
   echo """malyutka // 9M14 - Linux-native Nim agent harness (v""" & Version & """)
@@ -44,6 +44,8 @@ Options:
   --cgroups:auto|require|off Resource limits via a systemd user scope (default auto: degrade visibly)
   --limit-memory:MB          MemoryMax for sandboxed commands (default 2048, 0 = none)
   --limit-pids:N             TasksMax for sandboxed commands (default 512, 0 = none)
+  --mcp                      Connect the MCP servers in <state>/mcp.json (sandboxed; every call asks; see spec/SPEC-010)
+  --skills                   Enable skills_list / skill_view / skill_save (<state>/skills; save needs approval)
   --allow-memory             Enable the `memory` tool and inject memory.md into the prompt
   --soul:PATH                Operator persona file (default <state>/SOUL.md if present)
   --personality:NAME         concise|teacher|kawaii|terse-ops
@@ -348,6 +350,8 @@ proc main() =
         of "allow-shell": cfg.allowShell = true
         of "allow-files": cfg.allowFiles = true
         of "allow-memory": cfg.allowMemory = true
+        of "skills": cfg.allowSkills = true
+        of "mcp": cfg.allowMcp = true
         of "allow-process": cfg.allowProcess = true
         of "max-processes": cfg.maxProcesses = parseInt(val)
         of "cgroups": cfg.cgroupMode = parseCgroupMode(val)

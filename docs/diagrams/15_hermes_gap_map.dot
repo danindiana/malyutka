@@ -14,10 +14,9 @@ digraph gap {
       h6 [label="Session resume · memory\nSOUL.md · personalities (0.5.0)", color="#3fb950"];
       h7 [label="TUI: multi-turn · approval modal\n/undo /retry · diff + todo views", color="#3fb950"];
       h8 [label="Context compaction (I10)\nranked session search (0.6.0)", color="#3fb950"];
-      h9 [label="Background processes (I16)\nmemory/task limits (0.7.0)", color="#3fb950"]; }
+      h9 [label="Background processes (I16)\nmemory/task limits (0.7.0)", color="#3fb950"];
+      h10 [label="Skills (data) · MCP client (I17)\n(0.8.0)", color="#3fb950"]; }
     subgraph cluster_def { label="Deferred (todo/)"; fontcolor="#d29922"; color="#d29922"; style="rounded";
-      d3 [label="Skills (agentskills.io)", color="#d29922"];
-      d4 [label="MCP stdio client", color="#d29922"];
       d5 [label="Subagent delegation", color="#d29922"];
       d6 [label="Cron", color="#d29922"];
       d7 [label="Docker / SSH backends", color="#d29922"];

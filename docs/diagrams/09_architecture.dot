@@ -26,6 +26,10 @@ digraph architecture {
         latch [label="latch.nim\nmandates (commitment latch)\nL1-L5", color="#3fb950"];
         filetools [label="filetools.nim\nopenat + O_NOFOLLOW (I13)", color="#f0883e"];
         memory [label="memory.nim\nmemory · SOUL · personas", color="#d29922"];
+        compact [label="compact.nim\ncompaction (I10)", color="#39c5cf"];
+        process [label="process.nim\nbackground processes (I16)", color="#f0883e"];
+        skills [label="skills.nim\nSKILL.md notes (data)", color="#d29922"];
+        mcp [label="mcp.nim\nMCP stdio client (I17)", color="#f0883e"];
     }
     bwrap [label="bwrap child\n/bin/sh -c cmd\ntmpfs root · ws rw", color="#f0883e", fillcolor="#3a2210"];
     model [label="Model server\nOllama · vLLM · OpenAI", color="#58a6ff", fillcolor="#13294d"];
@@ -37,9 +41,12 @@ digraph architecture {
     cli -> core; core -> provider -> model [label="POST /v1/chat/completions"];
     core -> tools; core -> policy; core -> journal; core -> session; core -> events;
     core -> latch [label="ASK 1st"]; core -> approval [label="ASK 2nd"]; core -> memory [label="system prompt"];
-    tools -> filetools;
+    tools -> filetools; tools -> process; tools -> skills; tools -> mcp; core -> compact [label="75% window"];
     tools -> sandbox -> bwrap; bwrap -> ws [label="rw bind-fd"];
     journal -> state; session -> state;
+    mcp_srv [label="MCP server(s)\nsandboxed child, stdio JSON-RPC", color="#f85149", fillcolor="#3a1518"];
+    mcp -> mcp_srv [label="pipes"]; process -> bwrap [style=dashed];
+    skills -> state [label="skills/<name>/SKILL.md"];
     latch -> state [label="mandates.jsonl"]; approval -> state [label="allowlist.json"]; memory -> state [label="memory.md · SOUL.md"];
     tui -> state [label="read-only\n/history /journal", style=dashed, color="#d29922"];
 }

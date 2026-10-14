@@ -95,7 +95,8 @@ proc close*(h: WorkspaceHandle) =
 
 const SandboxPath* = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-proc bwrapArgv*(wsPath: string; command: string): seq[string] =
+proc bwrapArgv*(wsPath: string; command: string;
+                extraSetenv: seq[tuple[k, v: string]] = @[]): seq[string] =
   ## Empty tmpfs root; allowlisted system dirs read-only; private /dev, /proc,
   ## /tmp; the workspace read-write FROM FD 3 (see openWorkspace); all
   ## namespaces unshared (network included). Merged-/usr symlinks
@@ -107,6 +108,7 @@ proc bwrapArgv*(wsPath: string; command: string): seq[string] =
   # reach the sandboxed command (invariant 9).
   result.add ["--clearenv", "--setenv", "PATH", SandboxPath, "--setenv", "HOME", wsPath,
               "--setenv", "LANG", getEnv("LANG", "C.UTF-8"), "--setenv", "TERM", "dumb"]
+  for (k, v) in extraSetenv: result.add ["--setenv", k, v]
   for d in SystemDirs:
     if symlinkExists(d):
       result.add ["--symlink", expandSymlink(d), d]
@@ -133,7 +135,8 @@ proc scrubbedEnv*(home: string): StringTableRef =
   result["TERM"] = "dumb"
 
 proc spawnClean(argv: seq[string]; env: StringTableRef; workingDir: string;
-                keepFd: cint; hostTree: bool): tuple[pid: Pid, outFd: cint] =
+                keepFd: cint; hostTree: bool; stdinFd: cint = -1;
+                stderrNull = false): tuple[pid: Pid, outFd: cint] =
   ## fork + execve with fd hygiene that osproc.startProcess cannot provide:
   ## stdin is /dev/null, stdout+stderr share one pipe, and EVERY other fd is
   ## closed before exec, except `keepFd`, which is moved to fd 3 (the
@@ -159,9 +162,13 @@ proc spawnClean(argv: seq[string]; env: StringTableRef; workingDir: string;
     if hostTree:
       if setsid() < 0: exitnow(126)
       if c_prctl(PR_SET_PDEATHSIG, SIGKILL.culong) != 0: exitnow(126)
-    let nul = posix.open(devnull, O_RDONLY)
-    if nul < 0 or dup2(nul, 0) < 0 or dup2(pipeFds[1], 1) < 0 or dup2(pipeFds[1], 2) < 0:
-      exitnow(126)
+    let nul = posix.open(devnull, O_RDWR)
+    if nul < 0: exitnow(126)
+    if stdinFd >= 0:
+      if dup2(stdinFd, 0) < 0: exitnow(126)
+    elif dup2(nul, 0) < 0: exitnow(126)
+    if dup2(pipeFds[1], 1) < 0: exitnow(126)
+    if dup2((if stderrNull: nul else: pipeFds[1]), 2) < 0: exitnow(126)
     var firstToClose = 3.cuint
     if keepFd >= 0:
       if keepFd == 3:
@@ -409,3 +416,28 @@ proc sandboxCommand*(exe, wsPath, command: string; scopeActive: bool; unitPrefix
   if scopeActive:
     result.argv = scopedArgv(nextUnit(unitPrefix, kind), memoryMb, pids, result.argv)
     result.env = scopeEnv()
+
+# ---- long-lived piped child (MCP servers, SPEC-010) -----------------------------------
+
+type PipedChild* = object
+  pid*: Pid
+  inFd*: cint    ## write end of the child's stdin
+  outFd*: cint   ## read end of the child's stdout (stderr is discarded)
+
+proc startPiped*(argv: seq[string]; workingDir: string; keepFd: cint;
+                 extraEnv: seq[EnvPair] = @[]; hostTree = false): PipedChild =
+  ## Like startBackground, but with a stdin pipe and a stdout pipe, and stderr sent to
+  ## /dev/null. A write to a dead child must not kill the harness: SIGPIPE is ignored.
+  var inPipe: array[2, cint]
+  if pipe(inPipe) != 0: raiseOSError(osLastError(), "pipe")
+  discard fcntl(inPipe[1], F_SETFD, FD_CLOEXEC)
+  var sa: Sigaction
+  zeroMem(addr sa, sizeof(sa))
+  sa.sa_handler = SIG_IGN          # sigaction, not signal(): same on Nim 1.6 and 2.x
+  discard sigaction(SIGPIPE, sa, nil)
+  let home = if workingDir.len > 0: absolutePath(workingDir) else: getCurrentDir()
+  var env = scrubbedEnv(home)
+  for (k, v) in extraEnv: env[k] = v
+  let (pid, outFd) = spawnClean(argv, env, workingDir, keepFd, hostTree, stdinFd = inPipe[0], stderrNull = true)
+  discard posix.close(inPipe[0])
+  PipedChild(pid: pid, inFd: inPipe[1], outFd: outFd)
