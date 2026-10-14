@@ -431,7 +431,10 @@ proc startPiped*(argv: seq[string]; workingDir: string; keepFd: cint;
   var inPipe: array[2, cint]
   if pipe(inPipe) != 0: raiseOSError(osLastError(), "pipe")
   discard fcntl(inPipe[1], F_SETFD, FD_CLOEXEC)
-  discard posix.signal(SIGPIPE, SIG_IGN)
+  var sa: Sigaction
+  zeroMem(addr sa, sizeof(sa))
+  sa.sa_handler = SIG_IGN          # sigaction, not signal(): same on Nim 1.6 and 2.x
+  discard sigaction(SIGPIPE, sa, nil)
   let home = if workingDir.len > 0: absolutePath(workingDir) else: getCurrentDir()
   var env = scrubbedEnv(home)
   for (k, v) in extraEnv: env[k] = v
