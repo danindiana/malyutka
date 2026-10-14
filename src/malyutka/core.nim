@@ -77,6 +77,8 @@ proc runAgentBody(p: Provider; task: string; cfg: AgentConfig;
   discard em.emit("run.start", %*{"schema": "events/2", "provider": p.name, "tools": names,
                            "maxSteps": cfg.maxSteps, "repeatLimit": cfg.repeatLimit})
 
+  for ev in drainMcpEvents(): discard em.emit(ev.kind, ev.payload)
+
   # Fail closed before the model acts: a sandboxed capability without a
   # working sandbox aborts the run (invariants 5, 6).
   var hasSandboxTool = false

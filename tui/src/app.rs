@@ -32,6 +32,8 @@ pub struct Config {
     pub allow_files: bool,
     pub allow_memory: bool,
     pub allow_process: bool,
+    pub allow_skills: bool,
+    pub allow_mcp: bool,
     pub personality: String,
     pub context_window: Option<u64>,
     pub compress_next: bool,
@@ -85,6 +87,7 @@ pub struct BgProc {
 
 pub struct App {
     pub procs: Vec<BgProc>,
+    pub mcp: Vec<(String, String)>, // (server, state)
     pub approval: Option<Approval>,
     pub session: Option<String>,
     pub turns: Vec<Turn>,
@@ -119,6 +122,7 @@ impl App {
     pub fn new(cfg: Config, skin: Skin, doctor: Vec<(String, String)>) -> App {
         App {
             procs: vec![],
+            mcp: vec![],
             approval: None,
             session: None,
             turns: vec![],
@@ -173,6 +177,8 @@ impl App {
             (self.cfg.allow_files, "--allow-files"),
             (self.cfg.allow_memory, "--allow-memory"),
             (self.cfg.allow_process, "--allow-process"),
+            (self.cfg.allow_skills, "--skills"),
+            (self.cfg.allow_mcp, "--mcp"),
         ] {
             if on {
                 args.push(flag.to_string());
@@ -453,6 +459,40 @@ impl App {
                         .unwrap_or(0)
                 )));
             }
+            "mcp.connected" => {
+                let server = e.s("server");
+                let n = e.payload.get("tools").and_then(|v| v.as_u64()).unwrap_or(0);
+                let sb = e
+                    .payload
+                    .get("sandbox")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                self.mcp.retain(|(s, _)| *s != server);
+                self.mcp.push((
+                    server.clone(),
+                    format!("{n} tools, {}", if sb { "sandboxed" } else { "UNCONFINED" }),
+                ));
+                self.items.push(Item::Note(format!(
+                    "mcp {server}: {n} tool(s) connected ({})",
+                    if sb { "sandboxed" } else { "unconfined" }
+                )));
+            }
+            "mcp.failed" => {
+                let server = e.s("server");
+                self.mcp.retain(|(s, _)| *s != server);
+                self.mcp
+                    .push((server.clone(), format!("failed: {}", e.s("reason"))));
+                self.items.push(Item::Warn(format!(
+                    "mcp {server} unavailable: {}",
+                    e.s("reason")
+                )));
+            }
+            "mcp.refused" => self.items.push(Item::Warn(format!(
+                "mcp {}: tool '{}' refused: {}",
+                e.s("server"),
+                e.s("tool"),
+                e.s("reason")
+            ))),
             "confinement.limits" => self.items.push(Item::Note(format!(
                 "limits applied: {} MB memory, {} tasks",
                 e.payload
@@ -689,6 +729,8 @@ mod tests {
                 allow_files: false,
                 allow_memory: false,
                 allow_process: false,
+                allow_skills: false,
+                allow_mcp: false,
                 personality: String::new(),
                 context_window: None,
                 compress_next: false,
@@ -790,6 +832,8 @@ mod picker_tests {
                 allow_files: false,
                 allow_memory: false,
                 allow_process: false,
+                allow_skills: false,
+                allow_mcp: false,
                 personality: String::new(),
                 context_window: None,
                 compress_next: false,
@@ -1047,5 +1091,44 @@ mod picker_tests {
         assert!(!a.run_args("x").contains(&"--allow-process".to_string()));
         a.cfg.allow_process = true;
         assert!(a.run_args("x").contains(&"--allow-process".to_string()));
+    }
+
+    #[test]
+    fn mcp_events_and_flags() {
+        let mut a = app();
+        a.on_event(ev(
+            "mcp.connected",
+            serde_json::json!({"server":"notes","tools":3,"sandbox":true}),
+        ));
+        a.on_event(ev(
+            "mcp.failed",
+            serde_json::json!({"server":"bad","reason":"timed out"}),
+        ));
+        a.on_event(ev(
+            "mcp.refused",
+            serde_json::json!({"server":"notes","tool":"shell","reason":"name already registered"}),
+        ));
+        assert_eq!(a.mcp.len(), 2);
+        assert!(a.mcp[0].1.contains("3 tools") && a.mcp[0].1.contains("sandboxed"));
+        assert!(a.mcp[1].1.starts_with("failed"));
+        assert!(
+            matches!(&a.items[0], Item::Note(t) if t.contains("notes") && t.contains("3 tool"))
+        );
+        assert!(matches!(&a.items[1], Item::Warn(t) if t.contains("timed out")));
+        assert!(matches!(&a.items[2], Item::Warn(t) if t.contains("refused")));
+        // an unconfined server is called out
+        a.on_event(ev(
+            "mcp.connected",
+            serde_json::json!({"server":"host","tools":1,"sandbox":false}),
+        ));
+        assert!(a
+            .mcp
+            .iter()
+            .any(|(s, st)| s == "host" && st.contains("UNCONFINED")));
+        assert!(!a.run_args("x").contains(&"--mcp".to_string()));
+        a.cfg.allow_mcp = true;
+        a.cfg.allow_skills = true;
+        let args = a.run_args("x");
+        assert!(args.contains(&"--mcp".to_string()) && args.contains(&"--skills".to_string()));
     }
 }

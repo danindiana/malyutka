@@ -406,5 +406,56 @@ PATH="$NOSD" "$BIN" run --provider:mock --allow-shell --cgroups:off --json 'x' 2
 unset MALYUTKA_STATE_DIR
 export MALYUTKA_STATE_DIR="$WORK/state"
 
+# 15. MCP servers and skills through the real CLI.
+mkdir -p "$WORK/m7/ws" && cd "$WORK/m7/ws" || exit 2
+P7=$((P6 + 40))
+export MALYUTKA_STATE_DIR="$WORK/m7/state"; mkdir -p "$MALYUTKA_STATE_DIR"
+cp "$HERE/fake_mcp.py" .
+MCPTAG="m7tag-$$-mcp"
+python3 -c 'import json,sys; print(json.dumps({"servers":[{"name":"s","command":["python3","fake_mcp.py","good",sys.argv[1]],"sandbox":True,"maxEffect":"B1","trust":"ask","timeoutSec":10,"envAllow":[]}]}))' "$MCPTAG" > "$MALYUTKA_STATE_DIR/mcp.json"
+chmod 600 "$MALYUTKA_STATE_DIR/mcp.json"
+echo '[[{"name":"mcp_s_echo","args":{"text":"via mcp"}}]]' > "$WORK/m7a.json"
+python3 -I "$HERE/fake_script.py" "$P7" "$WORK/m7a.json" >/dev/null 2>&1 & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$P7 --mcp --json 'mcp unasked' > "$WORK/m7a.trace" 2> "$WORK/m7a.err"
+if grep -q '"mcp.connected"' "$WORK/m7a.trace" && grep -q 'asked by mcp.ask' "$WORK/m7a.err" && ! grep -q 'via mcp' "$WORK/m7a.err"; then
+  ok "mcp: connected, and an unasked call is denied (asked by mcp.ask; nothing ran)"
+else bad "mcp unasked: $(grep -o 'mcp\.[a-z]*' "$WORK/m7a.trace" | head -3 | tr '\n' ' ') / $(tail -2 "$WORK/m7a.err")"; fi
+[ "$(tag_count "$MCPTAG")" = 0 ] && ok "mcp: the server died with the run" || bad "mcp server survived the run"
+python3 -I "$HERE/fake_script.py" $((P7 + 1)) "$WORK/m7a.json" >/dev/null 2>&1 & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P7 + 1)) --mcp --approvals:off --i-know-approvals-off --json 'mcp approved' \
+  > "$WORK/m7b.trace" 2> "$WORK/m7b.err"
+if grep -q 'via mcp' "$WORK/m7b.err" && grep -q '"policy":"approval.user"' "$WORK/m7b.trace"; then
+  ok "mcp: an approved call reaches the sandboxed server and returns its text"
+else bad "mcp approved: $(tail -2 "$WORK/m7b.err")"; fi
+[ "$(tag_count "$MCPTAG")" = 0 ] && ok "mcp: nothing survives the approved run either" || bad "mcp survivor after approved run"
+chmod 666 "$MALYUTKA_STATE_DIR/mcp.json"
+python3 -I "$HERE/fake_script.py" $((P7 + 2)) "$WORK/m7a.json" >/dev/null 2>&1 & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P7 + 2)) --mcp --approvals:off --i-know-approvals-off --json 'mcp unsafe cfg' \
+  > "$WORK/m7c.trace" 2> "$WORK/m7c.err"
+grep -q '"mcp.failed"' "$WORK/m7c.trace" && ! grep -q 'via mcp' "$WORK/m7c.err" \
+  && ok "mcp: a group/world-writable mcp.json is refused wholesale (no servers)" || bad "unsafe mcp.json accepted"
+chmod 600 "$MALYUTKA_STATE_DIR/mcp.json"
+
+# skills: save asks; denied by default, saved when approved; list/view return the text as data
+python3 -c 'import json; c="---\nname: deploy\ndescription: how to deploy\n---\nrun make then ship\n"; print(json.dumps([[{"name":"skill_save","args":{"name":"deploy","content":c}}]]))' > "$WORK/m7s.json"
+python3 -I "$HERE/fake_script.py" $((P7 + 3)) "$WORK/m7s.json" >/dev/null 2>&1 & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P7 + 3)) --skills --json 'save a skill (default: deny)' > "$WORK/m7d.trace" 2> "$WORK/m7d.err"
+[ ! -e "$MALYUTKA_STATE_DIR/skills/deploy/SKILL.md" ] && grep -q 'asked by approval.dangerous' "$WORK/m7d.err" \
+  && ok "skills: skill_save is denied without an approver" || bad "skill_save without approver: $(tail -2 "$WORK/m7d.err")"
+python3 -I "$HERE/fake_script.py" $((P7 + 4)) "$WORK/m7s.json" >/dev/null 2>&1 & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P7 + 4)) --skills --approvals:off --i-know-approvals-off --json 'save a skill (approved)' > "$WORK/m7e.trace" 2>/dev/null
+sk="$MALYUTKA_STATE_DIR/skills/deploy/SKILL.md"
+[ -f "$sk" ] && [ "$(stat -c %a "$sk")" = 600 ] && [ "$(stat -c %a "$MALYUTKA_STATE_DIR/skills/deploy")" = 700 ] \
+  && ok "skills: approved skill_save wrote SKILL.md (0600) in a 0700 dir under the state dir" || bad "skill not saved with right modes"
+echo '[[{"name":"skills_list","args":{}},{"name":"skill_view","args":{"name":"deploy"}},{"name":"skill_view","args":{"name":"../etc"}}]]' > "$WORK/m7v.json"
+python3 -I "$HERE/fake_script.py" $((P7 + 5)) "$WORK/m7v.json" >/dev/null 2>&1 & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P7 + 5)) --skills --json 'list and view' > "$WORK/m7f.trace" 2> "$WORK/m7f.err"
+if grep -q 'deploy: how to deploy' "$WORK/m7f.err" && grep -q 'run make then ship' "$WORK/m7f.err" && grep -q 'invalid skill name' "$WORK/m7f.err"; then
+  ok "skills: list and view return the text; a traversal name is refused"
+else bad "skills list/view: $(tail -3 "$WORK/m7f.err")"; fi
+[ ! -e "$WORK/m7/state/etc" ] && ok "skills: nothing written outside <state>/skills" || bad "skill path escape"
+unset MALYUTKA_STATE_DIR
+export MALYUTKA_STATE_DIR="$WORK/state"
+
 echo "integration: $pass passed, $fail failed"
 [ $fail -eq 0 ]

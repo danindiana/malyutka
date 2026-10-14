@@ -241,7 +241,54 @@ c_process() {
   return 0
 }
 
-ALL_CHECKS="files shell_and_files ask_deny ask_once ask_timeout resume memory mandate compaction process"
+# like ask_run, but with its own prompt and flags; every approval.request is answered with $answer
+approved_run() { # name model answer prompt [extra flags...]
+  local name=$1 model=$2 answer=$3 prompt=$4; shift 4
+  rm -f "$WORK/$name.fifo"
+  mkfifo "$WORK/$name.fifo"
+  timeout "$TMO" "$BIN" run --provider:ollama --model:"$model" --base-url:"$OLLAMA" --json --theme:plain \
+    --approvals:stdin --approval-timeout:60 "$@" "$prompt" \
+    < "$WORK/$name.fifo" > "$WORK/$name.trace" 2> "$WORK/$name.err" &
+  PID=$!
+  exec 7> "$WORK/$name.fifo"
+  responder "$name" "$answer"
+  wait $PID; RC=$?
+  exec 7>&-
+}
+c_skills() {
+  fresh "skl-$2"
+  approved_run "skl-$2" "$1" once "Save a skill named deploy with the skill_save tool. Its content must be exactly these lines: a line with three dashes, a line 'name: deploy', a line 'description: how to deploy', a line with three dashes, then the text 'run make then ship'. After saving, call skills_list." --skills
+  invariants "skl-$2" || return $?
+  chk has "$WORK/skl-$2.trace" approval.request tool=skill_save || return 2
+  local f="$MALYUTKA_STATE_DIR/skills/deploy/SKILL.md"
+  [ -f "$f" ] || return 2
+  [ "$(stat -c %a "$f")" = 600 ] || return 1
+  [ ! -e "$PWD/skills" ] || return 1
+  grep -q 'run make' "$f" || return 2
+  return 0
+}
+c_mcp() {
+  fresh "mcp-$2"
+  local tag="m2tag-$$-mcp$2"
+  cp "$HERE/fake_mcp.py" .
+  mkdir -p "$MALYUTKA_STATE_DIR"
+  python3 -c 'import json,sys; print(json.dumps({"servers":[{"name":"s","command":["python3","fake_mcp.py","good",sys.argv[1]],"sandbox":True,"maxEffect":"B1","trust":"ask","timeoutSec":20,"envAllow":[]}]}))' "$tag" > "$MALYUTKA_STATE_DIR/mcp.json"
+  chmod 600 "$MALYUTKA_STATE_DIR/mcp.json"
+  approved_run "mcp-$2" "$1" once "Use the mcp_s_add tool to add 19 and 23 and tell me the sum." --mcp
+  invariants "mcp-$2" || return $?
+  chk has "$WORK/mcp-$2.trace" mcp.connected || return 1
+  chk has "$WORK/mcp-$2.trace" tool.proposed name=mcp_s_add || return 2
+  chk has "$WORK/mcp-$2.trace" approval.request tool=mcp_s_add || return 1     # MCP never runs unasked
+  grep -q '42' "$WORK/mcp-$2.err" || return 2
+  local n=1 i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    n=$(chk survivors "$tag"); [ "$n" = 0 ] && break; sleep 0.3
+  done
+  [ "$n" = 0 ] || { log "      $n MCP server process(es) outlived the run"; return 1; }
+  return 0
+}
+
+ALL_CHECKS="files shell_and_files ask_deny ask_once ask_timeout resume memory mandate compaction process skills mcp"
 CHECKS=${M2_CHECKS:-$ALL_CHECKS}
 for m in $MODELS; do
   log ""; log "== model $m"

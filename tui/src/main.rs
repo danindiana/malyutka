@@ -25,6 +25,8 @@ USAGE: malyutka-tui [OPTIONS]
   --ollama [url]          use local Ollama (default $OLLAMA_HOST or 127.0.0.1:11434)
   --allow-shell           allow the sandboxed shell tool
   --allow-files           allow read_file/search_files/write_file/patch/todo (workspace only)
+  --skills                enable skills_list / skill_view / skill_save (save asks)
+  --mcp                   connect the MCP servers in <state>/mcp.json (sandboxed, every call asks)
   --allow-process         enable the background process tool (sandboxed, max 4)
   --allow-memory          enable the memory tool and inject memory.md
   --personality <name>    concise | teacher | kawaii | terse-ops
@@ -41,6 +43,8 @@ fn parse_args() -> Result<(Config, String), String> {
         allow_files: false,
         allow_memory: false,
         allow_process: false,
+        allow_skills: false,
+        allow_mcp: false,
         personality: String::new(),
         context_window: None,
         compress_next: false,
@@ -65,6 +69,8 @@ fn parse_args() -> Result<(Config, String), String> {
             "--allow-files" => cfg.allow_files = true,
             "--allow-memory" => cfg.allow_memory = true,
             "--allow-process" => cfg.allow_process = true,
+            "--skills" => cfg.allow_skills = true,
+            "--mcp" => cfg.allow_mcp = true,
             "--personality" => cfg.personality = val("--personality")?,
             "--context-window" => {
                 cfg.context_window = Some(
@@ -209,6 +215,15 @@ fn run_command(app: &mut App, line: &str, tx: &Sender<Msg>) {
             let o = runner::capture(&app.cfg.bin, &["sessions", &format!("--search:{arg}")]);
             app.note(o.trim_end().to_string());
         }
+        "/mcp" => {
+            if app.mcp.is_empty() {
+                app.note("no MCP servers connected in this session (enable with /tools mcp; config: <state>/mcp.json)");
+            } else {
+                let lines: Vec<String> =
+                    app.mcp.iter().map(|(s, st)| format!("{s}: {st}")).collect();
+                app.note(lines.join("\n"));
+            }
+        }
         "/ps" => {
             if app.procs.is_empty() {
                 app.note("no background processes in this session");
@@ -257,11 +272,18 @@ fn run_command(app: &mut App, line: &str, tx: &Sender<Msg>) {
                 "shell" => app.cfg.allow_shell = !app.cfg.allow_shell,
                 "memory" => app.cfg.allow_memory = !app.cfg.allow_memory,
                 "process" => app.cfg.allow_process = !app.cfg.allow_process,
+                "skills" => app.cfg.allow_skills = !app.cfg.allow_skills,
+                "mcp" => app.cfg.allow_mcp = !app.cfg.allow_mcp,
                 _ => {}
             }
             app.note(format!(
-                "tools: files={} shell={} memory={} process={}   (toggle: /tools files|shell|memory|process)",
-                app.cfg.allow_files, app.cfg.allow_shell, app.cfg.allow_memory, app.cfg.allow_process
+                "tools: files={} shell={} memory={} process={} skills={} mcp={}   (toggle: /tools files|shell|memory|process|skills|mcp)",
+                app.cfg.allow_files,
+                app.cfg.allow_shell,
+                app.cfg.allow_memory,
+                app.cfg.allow_process,
+                app.cfg.allow_skills,
+                app.cfg.allow_mcp
             ));
         }
         "/model" | "/models" if arg.is_empty() => open_picker(app),

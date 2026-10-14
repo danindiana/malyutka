@@ -13,6 +13,7 @@ digraph tuiint {
     cli [label="malyutka run --json\n(child process, one per prompt)", color="#bc8cff", fillcolor="#2a1f45"];
     ro [label="state dir (read-only)\nsessions/ · journal tail", shape=folder, color="#d29922", fillcolor="#2e2410"];
     opcmd [label="malyutka journal\n--ack / --reconcile\n(locked transaction)", color="#3fb950"];
+    mcpn [label="session notes only:\n/mcp lists servers, /ps processes;\nMCP/skills are harness features", color="#3fb950"];
     oll [label="Ollama /api/tags", color="#58a6ff", fillcolor="#13294d"];
     plan [label="approval.request ⟶ modal ⟶ {action, answer} on child stdin\n--resume <last run> ⟶ multi-turn · /undo /retry resume the earlier run", color="#3fb950"];
 

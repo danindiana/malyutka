@@ -42,6 +42,7 @@ type
     erSandbox = "sandbox"       ## child process confined by the sandbox broker
     erHost = "host"             ## child process with the operator's full authority
     erRemote = "remote"         ## reserved
+    erExternal = "external"     ## a server process speaking a protocol (MCP): ceiling set by the operator
 
   EffectClass* = enum
     ## Blast radius of an action. Ordered: higher = more consequential.
@@ -56,6 +57,7 @@ type
     name*: string
     realm*: ExecutionRealm
     maxEffect*: EffectClass     ## ceiling no policy layer can exceed
+    askExempt*: bool            ## only set by the operator (mcp.json trust:allow on a B0 server)
 
   Decision* = object
     eventId*: string
@@ -84,6 +86,8 @@ type
     soul*: string               ## operator text prepended to the system prompt
     personality*: string
     memoryText*: string         ## snapshot of memory.md taken at run start
+    allowSkills*: bool          ## skills_list / skill_view / skill_save (SPEC-009)
+    allowMcp*: bool             ## MCP stdio client (SPEC-010)
     allowProcess*: bool         ## enable the background `process` tool
     cgroupMode*: CgroupMode
     limitMemoryMb*: int         ## MemoryMax for sandboxed commands (0 = none)
@@ -114,6 +118,7 @@ type
 proc baseConfig*(): AgentConfig =
   ## Defaults with no environment or filesystem input (tests use this).
   AgentConfig(maxSteps: 16, cwd: ".", allowShell: false, allowFiles: false, allowMemory: false,
+    allowSkills: false, allowMcp: false,
     allowProcess: false, cgroupMode: cmAuto, limitMemoryMb: 2048, limitPids: 512, maxProcesses: 4,
     scopeActive: false, unitPrefix: "malyutka",
     approvals: amDeny, approvalTimeoutSec: 300, unconfinedHost: false,

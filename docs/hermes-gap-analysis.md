@@ -19,8 +19,8 @@ behind a gate and with an invariant row. That is why the list below is ordered b
 | P1 | Slash-command parity in the TUI | partial | S | SPEC-003/004 |
 | P2 | Session search (SQLite FTS5) | **ranked search with a derived index (0.6.0)**; SQLite deliberately not used | M | [SPEC-007](../spec/SPEC-007-session-search.md) |
 | P2 | Context compression (`/compress`, auto) | **done (0.6.0), I10 enforced** | M | [SPEC-006](../spec/SPEC-006-context-compaction.md) |
-| P2 | Skills (agentskills.io `SKILL.md`) | none | M | [todo](../todo/P2-skills.md) |
-| P2 | MCP client (stdio) | none | M | [todo](../todo/P2-mcp-client.md) |
+| P2 | Skills (agentskills.io `SKILL.md`) | **done (0.8.0)** as data: list / view / agent-authored save with ASK | M | [SPEC-009](../spec/SPEC-009-skills.md) |
+| P2 | MCP client (stdio) | **done (0.8.0), I17**: sandboxed servers, per-call ASK, operator-set ceilings | M | [SPEC-010](../spec/SPEC-010-mcp-client.md) |
 | P2 | Background `process` tool | **done (0.7.0), I16**; plus memory/task limits via a systemd user scope | M | [SPEC-008](../spec/SPEC-008-processes-and-limits.md) |
 | P2 | Cron / scheduler | none | M | [todo](../todo/P2-cron.md) |
 | P2 | Subagent delegation | none (M6) | M–L | [todo](../todo/P2-delegation.md) |

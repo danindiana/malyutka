@@ -45,4 +45,9 @@ digraph catch22 {
       h2 [label="CI runners, containers and SSH-less sessions may have neither", color="#39c5cf"];
       h3 [label="Escape: functional probe at start; auto = run, say so\n(confinement.degraded); require = refuse (exit 3);\noff = skip. Containment does not depend on it.", color="#3fb950"];
       h1 -> h3; h2 -> h3; }
+    subgraph cluster_i { label="9 · MCP: useful servers vs a closed sandbox"; fontcolor="#f85149"; color="#f85149"; style="rounded";
+      i1 [label="Real MCP servers want the network, $HOME, credentials", color="#f85149"];
+      i2 [label="The sandbox gives them none of it, by design", color="#f85149"];
+      i3 [label="Escape: sandboxed by default (workspace + /usr only);\nsandbox:false is an explicit per-server config AND the\n--unconfined-host waiver (announced); every call still asks;\nceiling B0-B2 chosen by the operator", color="#3fb950"];
+      i1 -> i3; i2 -> i3; }
 }

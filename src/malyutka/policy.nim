@@ -87,6 +87,8 @@ let dangerousLayer* = PolicyLayer(id: "approval.dangerous",
               cfg: AgentConfig): tuple[verdict: Verdict, reason: string] =
     ## Legitimate-but-risky actions need an operator's OK. DENY-class commands
     ## are handled by the denylist and never reach an approver.
+    if call.name == "skill_save":
+      return (vAsk, "agent-authored skill (it persists across sessions)")
     if call.args.kind == JObject:
       if call.name in ["shell", "process"] and call.args.hasKey("command") and
          call.args["command"].kind == JString:
@@ -107,5 +109,14 @@ let approvalLayer* = PolicyLayer(id: "approval",
       (vAsk, "effect " & $effect & " needs approval (ask-from " & $cfg.askFrom & ")")
     else: (vAllow, ""))
 
+let mcpAskLayer* = PolicyLayer(id: "mcp.ask",
+  check: proc(call: ToolCall; cap: Capability; effect: EffectClass;
+              cfg: AgentConfig): tuple[verdict: Verdict, reason: string] =
+    ## Every MCP call asks (resolved by a latched mandate, an approver or the allowlist),
+    ## unless the operator marked a read-only (B0) server trust:allow. Can only lower ALLOW.
+    if cap.realm == erExternal and not cap.askExempt:
+      (vAsk, "MCP tool " & call.name & " runs outside the harness")
+    else: (vAllow, ""))
+
 proc defaultLayers*(): seq[PolicyLayer] =
-  @[confinementLayer, denylistLayer, dangerousLayer, approvalLayer]
+  @[confinementLayer, denylistLayer, dangerousLayer, approvalLayer, mcpAskLayer]
