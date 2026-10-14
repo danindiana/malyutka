@@ -518,6 +518,40 @@ if [ -e "$L/libssl.so.3" ] && command -v bwrap >/dev/null; then
   [ $rc -eq 0 ] && ok "web: malyutka itself starts and runs with libssl unavailable (only the helper needs it)" || bad "harness needs libssl (exit $rc)"
 fi
 "$BIN" doctor 2>/dev/null | grep -q '^web: ' && ok "doctor reports the web helper" || bad "doctor has no web line"
+
+# web_search: only a trust:allow SearXNG on loopback runs unasked; everything else asks; credential-shaped queries are DENIED
+SX="http://127.0.0.1:$WEBP/searx"
+python3 -c 'import json; print(json.dumps([[{"name":"web_search","args":{"query":"nim language"}}]]))' > "$WORK/m8s.json"
+python3 -c 'import json; print(json.dumps([[{"name":"web_search","args":{"query":"sk-"+"a"*40}}]]))' > "$WORK/m8k.json"
+echo "{\"search\": {\"backend\": \"searxng\", \"searxng\": {\"url\": \"$SX\", \"trust\": \"allow\"}}}" > "$MALYUTKA_STATE_DIR/web.json"; chmod 600 "$MALYUTKA_STATE_DIR/web.json"
+python3 -I "$HERE/fake_script.py" $((P8 + 5)) "$WORK/m8s.json" >/dev/null 2>&1 & sleep 0.5
+: > "$WORK/m8/web.log"
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P8 + 5)) --web --json 'search trusted' > "$WORK/m8f.trace" 2> "$WORK/m8f.err"
+if grep -Eq 'web_search searxng .{1,8} 5 results .{1,8} untrusted search results' "$WORK/m8f.err" && grep -q '"web.searched"' "$WORK/m8f.trace" \
+   && grep -q 'GET /searx/search?q=nim%20language&format=json' "$WORK/m8/web.log"; then
+  ok "web_search: a trust:allow SearXNG on loopback runs unasked and returns labelled results"
+else bad "trusted search: $(tail -3 "$WORK/m8f.err")"; fi
+
+echo "{\"search\": {\"backend\": \"searxng\", \"searxng\": {\"url\": \"$SX\"}}}" > "$MALYUTKA_STATE_DIR/web.json"
+python3 -I "$HERE/fake_script.py" $((P8 + 6)) "$WORK/m8s.json" >/dev/null 2>&1 & sleep 0.5
+: > "$WORK/m8/web.log"
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P8 + 6)) --web --json 'search untrusted' > "$WORK/m8g.trace" 2> "$WORK/m8g.err"
+grep -q 'asked by web.ask' "$WORK/m8g.err" && [ ! -s "$WORK/m8/web.log" ] \
+  && ok "web_search: without trust:allow the search asks (denied with no approver) and never reaches the server" || bad "untrusted search: $(tail -2 "$WORK/m8g.err")"
+
+echo "{\"search\": {\"backend\": \"searxng\", \"searxng\": {\"url\": \"http://192.168.1.5:8888\", \"trust\": \"allow\"}}}" > "$MALYUTKA_STATE_DIR/web.json"
+python3 -I "$HERE/fake_script.py" $((P8 + 7)) "$WORK/m8s.json" >/dev/null 2>&1 & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P8 + 7)) --web --json 'search nonloopback trust' > "$WORK/m8h.trace" 2> "$WORK/m8h.err"
+grep -q 'web access disabled' "$WORK/m8h.err" && grep -q 'loopback' "$WORK/m8h.err" \
+  && ok "web_search: trust:allow for a non-loopback host is a config defect that turns web access off" || bad "non-loopback trust: $(tail -2 "$WORK/m8h.err")"
+
+echo "{\"search\": {\"backend\": \"searxng\", \"searxng\": {\"url\": \"$SX\", \"trust\": \"allow\"}}}" > "$MALYUTKA_STATE_DIR/web.json"
+python3 -I "$HERE/fake_script.py" $((P8 + 8)) "$WORK/m8k.json" >/dev/null 2>&1 & sleep 0.5
+: > "$WORK/m8/web.log"
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P8 + 8)) --web --approvals:off --i-know-approvals-off --json 'search secret' > "$WORK/m8i.trace" 2> "$WORK/m8i.err"
+grep -q '"verdict":"DENY"' "$WORK/m8i.trace" && grep -q 'credential' "$WORK/m8i.err" && [ ! -s "$WORK/m8/web.log" ] \
+  && ok "web_search: a credential-shaped query is DENIED even on a trusted backend with approvals off" || bad "secret query: $(tail -2 "$WORK/m8i.err")"
+rm -f "$MALYUTKA_STATE_DIR/web.json"
 kill "$(cat "$WORK/m8/web.pid")" 2>/dev/null
 unset MALYUTKA_STATE_DIR
 export MALYUTKA_STATE_DIR="$WORK/state"

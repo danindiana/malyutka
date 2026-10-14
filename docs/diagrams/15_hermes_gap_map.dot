@@ -16,7 +16,7 @@ digraph gap {
       h8 [label="Context compaction (I10)\nranked session search (0.6.0)", color="#3fb950"];
       h9 [label="Background processes (I16)\nmemory/task limits (0.7.0)", color="#3fb950"];
       h10 [label="Skills (data) · MCP client (I17)\n(0.8.0)", color="#3fb950"];
-      h11 [label="web_fetch (I18); search backends next", color="#58a6ff", fillcolor="#13294d"]; }
+      h11 [label="web_fetch + web_search (I18)", color="#58a6ff", fillcolor="#13294d"]; }
     subgraph cluster_def { label="Deferred (todo/)"; fontcolor="#d29922"; color="#d29922"; style="rounded";
       d5 [label="Subagent delegation", color="#d29922"];
       d6 [label="Cron", color="#d29922"];

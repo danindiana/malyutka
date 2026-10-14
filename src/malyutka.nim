@@ -1,5 +1,5 @@
 import std/[asyncdispatch, json, os, parseopt, strutils, tables]
-import malyutka/[types, provider, core, session, events, config, sandbox, journal, approval, memory, latch, tools, web]
+import malyutka/[types, provider, core, session, events, config, sandbox, journal, approval, memory, latch, tools, web, policy]
 
 const Version = "0.8.0"
 
@@ -45,7 +45,8 @@ Options:
   --limit-memory:MB          MemoryMax for sandboxed commands (default 2048, 0 = none)
   --limit-pids:N             TasksMax for sandboxed commands (default 512, 0 = none)
   --mcp                      Connect the MCP servers in <state>/mcp.json (sandboxed; every call asks; see spec/SPEC-010)
-  --web                      Enable web_fetch (via the sandboxed malyutka_web helper; every call asks; see spec/SPEC-011)
+  --web                      Enable web_fetch / web_search (via the sandboxed malyutka_web helper; every call asks; see spec/SPEC-011)
+  --web-backend:NAME         Search backend: searxng|brave|tavily (overrides search.backend in <state>/web.json; no fallback)
   --skills                   Enable skills_list / skill_view / skill_save (<state>/skills; save needs approval)
   --allow-memory             Enable the `memory` tool and inject memory.md into the prompt
   --soul:PATH                Operator persona file (default <state>/SOUL.md if present)
@@ -314,6 +315,16 @@ proc doctor() =
                     else: "UNAVAILABLE - " & sdetail & " (limits are not applied; --cgroups:require would refuse)")
   let (wok, wdetail) = probeWebHelper(false)
   echo "web: ", (if wok: "helper OK (" & wdetail & ")" else: "UNAVAILABLE - " & wdetail & " (--web will not register its tools)")
+  block searchLine:
+    var dc = defaultConfig()
+    dc.stateDir = stateDir()
+    let probs = applyWebConfig(dc)
+    if probs.len > 0: echo "web search: web.json problem - ", probs[0], " (web access stays off)"
+    elif dc.webSearch.backend.len == 0: echo "web search: no backend configured (web_search will not register)"
+    else:
+      let sc = dc.webSearch
+      echo "web search: ", sc.backend, " at ", sc.url, (if sc.keyEnv.len > 0: " (key from $" & sc.keyEnv & (if getEnv(sc.keyEnv).len > 0: ", set)" else: ", NOT set)") else: ""),
+           (if searchExempt(dc): "; runs unasked (trusted loopback)" else: "; every call asks")
   echo "journal: ", journalPath()
   if not ok:
     echo "note: --allow-shell will refuse to run until the sandbox probe passes."
@@ -355,6 +366,7 @@ proc main() =
         of "allow-memory": cfg.allowMemory = true
         of "skills": cfg.allowSkills = true
         of "web": cfg.allowWeb = true
+        of "web-backend": cfg.webBackend = val.toLowerAscii
         of "mcp": cfg.allowMcp = true
         of "allow-process": cfg.allowProcess = true
         of "max-processes": cfg.maxProcesses = parseInt(val)

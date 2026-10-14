@@ -1,7 +1,7 @@
 ## SPEC-011 web access (invariant 18). Compiled with -d:ssl (config.nims) because it exercises the
 ## TLS client; the main harness binary never links it.
 import std/[json, net, os, osproc, strutils, times, unittest]
-import malyutka/[types, urlsafety, httpfetch]
+import malyutka/[types, urlsafety, httpfetch, websearch]
 
 suite "URL parsing":
   test "accepts ordinary http and https URLs and normalises the host":
@@ -175,7 +175,7 @@ proc waitPort(port: int): bool =
 
 if haveOpenssl:
   discard execCmd("openssl req -x509 -newkey rsa:2048 -nodes -keyout " & keyFile.quoteShell & " -out " & certFile.quoteShell &
-                  " -days 2 -subj /CN=fake.test -addext subjectAltName=DNS:fake.test >/dev/null 2>&1")
+                  " -days 2 -subj /CN=fake.test -addext subjectAltName=DNS:fake.test,IP:127.0.0.1 >/dev/null 2>&1")
   server = startProcess("python3", args = ["-I", fakeWeb, $httpPort, $httpsPort, certFile, keyFile, logFile], options = {poUsePath})
 else:
   server = startProcess("python3", args = ["-I", fakeWeb, $httpPort, logFile], options = {poUsePath})
@@ -366,6 +366,140 @@ else:
       let r = fetch(sbase("/headers"), o)
       check r.ok and parseJson(r.body)["headers"]["authorization"].getStr == "Bearer k"
 
+suite "search: queries, requests and answers (no sockets)":
+  test "queryProblem accepts ordinary queries and refuses empty, long, control-character and credential-shaped ones":
+    check queryProblem("nim language release notes").len == 0
+    check queryProblem("what is 2+2? \"quoted\" café").len == 0
+    for q in ["", "   ", "a".repeat(401), "bad\x01query", "sk-" & "a".repeat(30), "my key is ghp_" & "A".repeat(30),
+              "AKIA" & "B".repeat(16), "xoxb-123-456", "token=hf_" & "c".repeat(30),
+              "-----BEGIN RSA PRIVATE KEY----- abc"]:
+      check queryProblem(q).len > 0
+    check queryProblem("a".repeat(400)).len == 0
+
+  test "loopbackHost: only 127/8, ::1 and localhost":
+    for h in ["localhost", "LOCALHOST", "127.0.0.1", "127.1.2.3", "127.255.255.255", "::1"]: check loopbackHost(h)
+    for h in ["10.0.0.1", "192.168.1.1", "128.0.0.1", "126.255.255.255", "0.0.0.0", "::", "fe80::1", "example.com",
+              "localhost.example.com", "127.0.0.1.example.com", "::ffff:127.0.0.1", "169.254.169.254", ""]:
+      check not loopbackHost(h)
+
+  test "SearXNG: GET {base}/search?q=...&format=json, no credentials, no redirects":
+    let (url, o, err) = buildRequest(SearchReq(backend: "searxng", base: "http://127.0.0.1:8888/", query: "a b&c=d/é", limit: 5))
+    check err == "" and url == "http://127.0.0.1:8888/search?q=a%20b%26c%3Dd%2F%C3%A9&format=json"
+    check o.meth == "GET" and o.headers.len == 0 and not o.followRedirects and not o.requireHttps
+
+  test "Brave: GET with the token header and count, https required, no redirects":
+    let (url, o, err) = buildRequest(SearchReq(backend: "brave", base: "https://api.search.brave.com/res/v1/web/search", key: "K1", query: "nim", limit: 7))
+    check err == "" and url == "https://api.search.brave.com/res/v1/web/search?q=nim&count=7"
+    check o.headers == @[("X-Subscription-Token", "K1")] and o.requireHttps and not o.followRedirects and o.meth == "GET"
+    check buildRequest(SearchReq(backend: "brave", base: "https://h/x", key: "K", query: "q", limit: 99)).url.endsWith("&count=20")
+    check buildRequest(SearchReq(backend: "brave", base: "https://h/x", key: "K", query: "q", limit: 0)).url.endsWith("&count=1")
+
+  test "Tavily: POST with a Bearer header and a JSON body, https required, no redirects":
+    let (url, o, err) = buildRequest(SearchReq(backend: "tavily", base: "https://api.tavily.com/search", key: "K2", query: "say \"hi\"", limit: 3))
+    check err == "" and url == "https://api.tavily.com/search" and o.meth == "POST"
+    check o.headers[0] == ("Authorization", "Bearer K2") and o.requireHttps and not o.followRedirects
+    let b = parseJson(o.body)
+    check b["query"].getStr == "say \"hi\"" and b["max_results"].getInt == 3 and not b.hasKey("api_key")
+
+  test "a request is refused before anything is built: bad backend, query, endpoint, missing key":
+    check buildRequest(SearchReq(backend: "bing", base: "https://x", query: "q")).err.len > 0
+    check buildRequest(SearchReq(backend: "searxng", base: "http://h", query: "")).err.len > 0
+    check buildRequest(SearchReq(backend: "searxng", base: "http://h", query: "sk-" & "a".repeat(30))).err.len > 0
+    check buildRequest(SearchReq(backend: "searxng", base: "", query: "q")).err.len > 0
+    check buildRequest(SearchReq(backend: "searxng", base: "http://h?x=1", query: "q")).err.len > 0
+    check buildRequest(SearchReq(backend: "brave", base: "https://h", key: "", query: "q")).err.len > 0
+    check buildRequest(SearchReq(backend: "tavily", base: "https://h", key: "", query: "q")).err.len > 0
+
+  test "answers: each backend's shape is normalised; bad entries are dropped; limit and clipping hold":
+    let sx = parseHits("searxng", """{"results":[{"title":"T1","url":"https://a.example/1","content":"c1"},{"title":"T2","url":"http://a.example/2"}]}""", 5)
+    check sx.ok and sx.hits.len == 2 and sx.hits[0].title == "T1" and sx.hits[0].description == "c1" and sx.hits[1].position == 2
+    let br = parseHits("brave", """{"web":{"results":[{"title":"B","url":"https://b.example","description":"<strong>bold</strong> &amp; more"}]}}""", 5)
+    check br.ok and br.hits[0].description == "bold & more"
+    let tv = parseHits("tavily", """{"results":[{"title":"V","url":"https://v.example","content":"vv","score":0.9}]}""", 5)
+    check tv.ok and tv.hits[0].url == "https://v.example" and tv.hits[0].description == "vv"
+    var many = ""
+    for i in 1 .. 30: many.add (if i > 1: "," else: "") & """{"title":"t","url":"https://x.example/""" & $i & """"}"""
+    check parseHits("searxng", """{"results":[""" & many & "]}", 4).hits.len == 4
+    let evil = parseHits("searxng", """{"results":[{"title":"j","url":"javascript:alert(1)"},{"title":"f","url":"ftp://x/y"},{"title":"s","url":"https://x/a b"},
+      "str", 5, null, {"title":"nourl"}, {"title":"ok","url":"https://ok.example/"}]}""", 5)
+    check evil.ok and evil.hits.len == 1 and evil.hits[0].url == "https://ok.example/" and evil.hits[0].position == 1
+    let big = parseHits("searxng", """{"results":[{"title":"""" & "T".repeat(900) & """","url":"https://x.example/","content":"""" & "d".repeat(5000) & """"}]}""", 5)
+    check big.hits[0].title.len <= 205 and big.hits[0].description.len <= 605
+
+  test "unusable answers are errors, not crashes":
+    check not parseHits("searxng", "<html>nope</html>", 5).ok
+    check not parseHits("searxng", "[1,2]", 5).ok
+    check parseHits("brave", "{}", 5).ok and parseHits("brave", "{}", 5).hits.len == 0
+    check parseHits("tavily", """{"results": "x"}""", 5).hits.len == 0
+    check not parseHits("nope", "{}", 5).ok
+
+suite "search: against the fake backends (real sockets)":
+  proc sreq(backend, base: string; key = ""; q = "nim lang"; limit = 5): SearchReq =
+    SearchReq(backend: backend, base: base, key: key, query: q, limit: limit)
+  proc run(r: SearchReq): SearchOutcome =
+    runSearch(r, 10, (if haveOpenssl: certFile else: ""), @[], @["fake.test"], counting())
+
+  test "SearXNG over http returns the normalised hits, honours the limit, sends no credentials":
+    writeFile(logFile, "")
+    let r = run(sreq("searxng", base("/searx"), limit = 3))
+    check r.ok and r.hits.len == 3 and r.hits[0].title == "Result 1 for nim lang" and r.hits[0].description == "snippet 1"
+    check "GET /searx/search?q=nim%20lang&format=json" in served()
+    let h = parseJson(fetch(base("/headers"), opts()).body)["headers"]
+    check not h.hasKey("authorization") and not h.hasKey("x-subscription-token")
+
+  test "SearXNG 403 (json format disabled) says how to fix it; hostile results are cleaned":
+    let r = run(sreq("searxng", base("/searx403")))
+    check not r.ok and "settings.yml" in r.error
+    let e = run(sreq("searxng", base("/searx-evil")))
+    check e.ok and e.hits.len == 2
+    check e.hits[0].title.startsWith("Bold & [web_search brave") and "<" notin e.hits[0].title        # markup gone; defanging is the tool's job
+    check "<script>" notin e.hits[0].description and e.hits[0].description.len <= 605
+    check e.hits[1].url == "http://ok.example/b"
+
+  if not haveOpenssl:
+    echo "SKIP keyed-backend tests: the openssl CLI is not installed"
+  else:
+    test "Brave: the key goes in the token header to the configured https host and answers parse":
+      let r = run(sreq("brave", sbase("/brave"), key = "brave-test-key"))
+      check r.ok and r.hits.len == 5 and r.hits[0].title == "Brave 1 nim lang" and r.hits[0].url == "https://example.org/b1"
+
+    test "Tavily: POST with a Bearer key and a JSON body":
+      let r = run(sreq("tavily", sbase("/tavily"), key = "tavily-test-key", q = "hello tavily"))
+      check r.ok and r.hits[0].title == "Tavily 1 hello tavily" and r.hits[0].url == "https://example.net/t1"
+
+    test "a rejected key is reported without ever echoing it":
+      writeFile(logFile, "")
+      let r = run(sreq("brave", sbase("/brave"), key = "SECRET-WRONG-KEY-123"))
+      check not r.ok and "API key" in r.error and "SECRET-WRONG-KEY-123" notin r.error
+      let l = run(sreq("brave", sbase("/leaky"), key = "SECRET-WRONG-KEY-123"))
+      check not l.ok and "SECRET-WRONG-KEY-123" notin l.error
+
+    test "a keyed backend over plain http is refused BEFORE any connection (the key never travels in clear)":
+      writeFile(logFile, "")
+      for b in ["brave", "tavily"]:
+        let r = run(sreq(b, base("/" & b), key = "brave-test-key"))
+        check not r.ok and "requires https" in r.error
+      check served() == ""
+
+    test "a keyed request does not follow a redirect (nothing is replayed to another URL)":
+      writeFile(logFile, "")
+      let r = run(sreq("brave", sbase("/brave-redir"), key = "brave-test-key"))
+      check not r.ok and "redirects are not followed" in r.error
+      check served().splitLines().len == 2 and "GET /brave-redir" in served()       # one request line + trailing empty
+
+    test "the key is not sent to a host whose certificate does not match (handshake fails first)":
+      writeFile(logFile, "")
+      let r = runSearch(sreq("brave", sbase("/brave", host = "other.test"), key = "brave-test-key"), 10, certFile, @[],
+                        @["fake.test", "other.test"], counting())
+      check not r.ok and "TLS error" in r.error
+      check served() == ""
+
+    test "no fallback: a failing backend never sends the query anywhere else":
+      writeFile(logFile, "")
+      let r = run(sreq("brave", sbase("/brave"), key = "wrong"))
+      check not r.ok
+      check served().strip.splitLines().len == 1 and "/search" notin served()
+
 suite "text helpers":
   test "toUtf8Lossy keeps valid text and replaces every invalid sequence":
     check toUtf8Lossy("plain ascii") == "plain ascii"
@@ -495,6 +629,102 @@ suite "web.json strictness":
     writeFile(st / "web.json", "{{{")
     cfg.allowWeb = true
     check applyWebConfig(cfg).len > 0 and not cfg.allowWeb
+
+suite "web search: configuration":
+  const good = """{"search": {"backend": "searxng",
+      "searxng": {"url": "http://127.0.0.1:8888", "trust": "allow"},
+      "brave": {"apiKeyEnv": "BRAVE_API_KEY"}, "tavily": {"apiKeyEnv": "TAVILY_API_KEY"}}}"""
+
+  test "a full search section parses; keyed backends default to their own https endpoints":
+    let r = parseWebConfig(good)
+    check r.problems.len == 0 and not r.cfg.disabled and r.cfg.backendName == "searxng"
+    check r.cfg.sections["searxng"].trustAllow and r.cfg.sections["searxng"].url == "http://127.0.0.1:8888"
+    check r.cfg.sections["brave"].url == "https://api.search.brave.com/res/v1/web/search" and r.cfg.sections["brave"].keyEnv == "BRAVE_API_KEY"
+    check r.cfg.sections["tavily"].url == "https://api.tavily.com/search" and not r.cfg.sections["brave"].trustAllow
+
+  test "every defect in the search section switches web access off":
+    for bad in ["""{"search": 5}""", """{"search": {"backend": "bing"}}""", """{"search": {"backend": 3}}""",
+                """{"search": {"searxng": {}}}""", """{"search": {"searxng": {"url": "http://h:1", "trust": "yes"}}}""",
+                """{"search": {"searxng": {"url": "http://h:1", "apiKeyEnv": "X"}}}""",
+                """{"search": {"searxng": {"url": "http://h:1", "colour": 1}}}""",
+                """{"search": {"searxng": {"url": "http://h:1?x=1"}}}""", """{"search": {"searxng": {"url": "ftp://h/"}}}""",
+                """{"search": {"searxng": {"url": "http://u:p@h:1"}}}""",
+                # the unasked exemption exists for loopback only
+                """{"search": {"searxng": {"url": "http://192.168.1.5:8888", "trust": "allow"}}}""",
+                """{"search": {"searxng": {"url": "http://searx.example.com", "trust": "allow"}}}""",
+                """{"search": {"searxng": {"url": "http://127.0.0.1.evil.com", "trust": "allow"}}}""",
+                """{"search": {"brave": {"apiKeyEnv": "K", "trust": "allow"}}}""",
+                """{"search": {"brave": {}}}""", """{"search": {"brave": {"apiKeyEnv": "has space"}}}""",
+                """{"search": {"brave": {"apiKeyEnv": "1BAD"}}}""", """{"search": {"brave": {"apiKeyEnv": "sk-realkey-value;rm"}}}""",
+                """{"search": {"brave": {"apiKeyEnv": "K", "url": "http://api.search.brave.com/x"}}}""",
+                """{"search": {"tavily": {"apiKeyEnv": "K", "url": "https://api.tavily.com/search?api_key=abc"}}}""",
+                """{"search": {"tavily": {"apiKeyEnv": "K", "url": "https://u:p@api.tavily.com/"}}}"""]:
+      let r = parseWebConfig(bad)
+      check r.cfg.disabled and r.problems.len >= 1
+
+  test "trust allow is accepted for localhost, 127/8 and ::1":
+    for h in ["http://localhost:8888", "http://127.0.0.1:8888", "http://127.9.9.9", "http://[::1]:8888"]:
+      check parseWebConfig("""{"search": {"searxng": {"url": """" & h & """", "trust": "allow"}}}""").problems.len == 0
+
+  test "applyWebConfig selects ONE backend; --web-backend overrides; a missing section or unknown name is a defect":
+    let st = freshDir("webapply2")
+    writeFile(st / "web.json", good); setFilePermissions(st / "web.json", {fpUserRead, fpUserWrite})
+    var cfg = baseConfig(); cfg.stateDir = st; cfg.allowWeb = true
+    check applyWebConfig(cfg).len == 0 and cfg.webSearch.backend == "searxng" and cfg.webSearch.trustAllow
+    var c2 = baseConfig(); c2.stateDir = st; c2.allowWeb = true; c2.webBackend = "brave"
+    check applyWebConfig(c2).len == 0 and c2.webSearch.backend == "brave" and c2.webSearch.keyEnv == "BRAVE_API_KEY" and not c2.webSearch.trustAllow
+    var c3 = baseConfig(); c3.stateDir = st; c3.allowWeb = true; c3.webBackend = "bing"
+    check applyWebConfig(c3).len > 0 and not c3.allowWeb and c3.webSearch.backend == ""
+    writeFile(st / "web.json", """{"search": {"backend": "tavily", "searxng": {"url": "http://127.0.0.1:1"}}}""")
+    var c4 = baseConfig(); c4.stateDir = st; c4.allowWeb = true
+    check applyWebConfig(c4).len > 0 and not c4.allowWeb and c4.webSearch.backend == ""         # no silent substitute
+    writeFile(st / "web.json", """{"fetch": {}}""")
+    var c5 = baseConfig(); c5.stateDir = st; c5.allowWeb = true
+    check applyWebConfig(c5).len == 0 and c5.allowWeb and c5.webSearch.backend == ""
+
+suite "web search: policy":
+  let scap = Capability(name: "web_search", realm: erNetwork, maxEffect: b3External)
+  let exempt = Capability(name: "web_search", realm: erNetwork, maxEffect: b3External, askExempt: true)
+  proc withBackend(backend, url: string; trust: bool): AgentConfig =
+    result = baseConfig()
+    result.webSearch = WebSearchCfg(backend: backend, url: url, trustAllow: trust, keyEnv: "K")
+  proc decide(c: Capability; cfg: AgentConfig; name = "web_search"; args = %*{"query": "nim"}): tuple[v: Verdict, id: string, why: string] =
+    let d = compose(defaultLayers(), ToolCall(id: "1", name: name, args: args), c, b3External, cfg, "e")
+    (d.verdict, d.policyId, d.reason)
+
+  test "every search asks, and the approval names the backend and the exact query":
+    for (b, u) in [("searxng", "http://127.0.0.1:8888"), ("brave", "https://api.search.brave.com/x"), ("tavily", "https://api.tavily.com/search")]:
+      let r = decide(scap, withBackend(b, u, false), args = %*{"query": "secret plans for tuesday"})
+      check r.v == vAsk and r.id == "web.ask" and b in r.why and "secret plans for tuesday" in r.why
+
+  test "ONLY a trust:allow SearXNG on loopback runs unasked":
+    check decide(exempt, withBackend("searxng", "http://127.0.0.1:8888", true)).v == vAllow
+    check decide(exempt, withBackend("searxng", "http://localhost:8888", true)).v == vAllow
+    check decide(exempt, withBackend("searxng", "http://[::1]:8888", true)).v == vAllow
+    # the flag on the capability is not enough: the live config is re-checked at every decision
+    check decide(exempt, withBackend("searxng", "http://192.168.1.5:8888", true)).v == vAsk
+    check decide(exempt, withBackend("searxng", "http://searx.example.com", true)).v == vAsk
+    check decide(exempt, withBackend("searxng", "http://127.0.0.1.evil.com", true)).v == vAsk
+    check decide(exempt, withBackend("searxng", "http://127.0.0.1:8888", false)).v == vAsk
+    check decide(exempt, withBackend("brave", "https://127.0.0.1/x", true)).v == vAsk
+    check decide(exempt, withBackend("tavily", "https://127.0.0.1/x", true)).v == vAsk
+    check decide(scap, withBackend("searxng", "http://127.0.0.1:8888", true)).v == vAsk          # no capability flag: asks
+    # the exemption never extends to fetching pages
+    let fcap = Capability(name: "web_fetch", realm: erNetwork, maxEffect: b3External, askExempt: true)
+    check decide(fcap, withBackend("searxng", "http://127.0.0.1:8888", true), "web_fetch", %*{"url": "https://example.com/"}).v == vAsk
+
+  test "a query that looks like a credential, or is empty/over-long, is DENY and never reaches an approver":
+    let cfg = withBackend("searxng", "http://127.0.0.1:8888", true)
+    for q in ["", "   ", "sk-" & "a".repeat(40), "ghp_" & "B".repeat(30), "a".repeat(500), "x\x00y"]:
+      let r = decide(exempt, cfg, args = %*{"query": q})
+      check r.v == vDeny and r.id == "web.url"
+    check decide(exempt, cfg, args = %*{"query": 5}).v == vDeny
+    check decide(exempt, cfg, args = %*{}).v == vDeny
+
+  test "a trusted search still cannot bypass the sandbox rules of other tools (no widening of web.ask to non-network realms)":
+    let other = Capability(name: "shell", realm: erSandbox, maxEffect: b2BroadWorkspace)
+    check decide(other, withBackend("searxng", "http://127.0.0.1:8888", true), "shell", %*{"command": "true"}).id != "web.ask"
+
 
 suite "web policy layers":
   let cap = Capability(name: "web_fetch", realm: erNetwork, maxEffect: b3External)
@@ -636,6 +866,95 @@ else:
       # 127.0.0.1 is allowed here, so use a literal that is not: the metadata address
       let r = runWebFetch(newWebState(), %*{"url": hurl("/redir?to=http://169.254.169.254/latest")}, c)
       check not r.ok and "metadata" in r.output
+
+    proc scfg(backend, url: string; trust = false): AgentConfig =
+      result = wcfg()
+      result.webAllowPrivate = @[]
+      result.webSearch = WebSearchCfg(backend: backend, url: url, trustAllow: trust, keyEnv: "MALYUTKA_TEST_SEARCH_KEY")
+      if haveOpenssl: result.webCaFile = certFile
+    let searxUrl = "http://127.0.0.1:" & $httpPort & "/searx"
+
+    test "web_search registers only with a configured backend, and carries the right capability":
+      let none = toolsFor(wcfg())
+      let evs = drainMcpEvents()
+      check "web_search" notin none and "web_fetch" in none
+      var reason = ""
+      for e in evs:
+        if e.kind == "web.unavailable": reason = e.payload["reason"].getStr
+      check "no search backend configured" in reason
+      let ask = toolsFor(scfg("searxng", searxUrl))
+      check "web_search" in ask and ask["web_search"].capability.realm == erNetwork and ask["web_search"].capability.maxEffect == b3External
+      check not ask["web_search"].capability.askExempt and ask["web_search"].effectOf(%*{"query": "x"}) == b3External
+      check toolsFor(scfg("searxng", searxUrl, trust = true))["web_search"].capability.askExempt
+      check not toolsFor(scfg("searxng", "http://192.168.1.5:8888", trust = true))["web_search"].capability.askExempt
+      check not toolsFor(scfg("brave", "https://api.search.brave.com/x", trust = true))["web_search"].capability.askExempt
+
+    test "search through the sandboxed helper: labelled untrusted results, event, memo":
+      writeFile(logFile, "")
+      let st = newWebState()
+      let c = scfg("searxng", searxUrl)
+      let r = runWebSearch(st, %*{"query": "nim lang", "limit": 3}, c)
+      check r.ok and r.eventKind == "web.searched" and r.eventPayload["backend"].getStr == "searxng" and r.eventPayload["results"].getInt == 3
+      check r.output.splitLines()[0] == "[web_search searxng · 3 results · untrusted search results]"
+      check "1. Result 1 for nim lang\n   https://example.com/r1\n   snippet 1" in r.output
+      let again = runWebSearch(st, %*{"query": "nim lang", "limit": 3}, c)
+      check "cached" in again.output.splitLines()[0] and served().count("/searx/search") == 1
+      check runWebSearch(st, %*{"query": "nim lang", "limit": 4}, c).output.startsWith("[web_search searxng · 4 results")   # other limit = other request
+
+    test "result text cannot forge our label or smuggle markup":
+      let r = runWebSearch(newWebState(), %*{"query": "evil"}, scfg("searxng", "http://127.0.0.1:" & $httpPort & "/searx-evil"))
+      check r.ok
+      var labels = 0
+      for l in r.output.splitLines():
+        if l.startsWith("[web_search "): inc labels
+      check labels == 1 and "[web-search brave" in r.output and "untrusted-search-results" in r.output
+      check "<script>" notin r.output and "javascript:" notin r.output
+
+    test "the configured SearXNG host is reachable for search only; it does not open web_fetch to loopback":
+      let c = scfg("searxng", searxUrl)
+      check runWebSearch(newWebState(), %*{"query": "x"}, c).ok
+      let f = runWebFetch(newWebState(), %*{"url": hurl("/html")}, c)
+      check not f.ok and "refused" in f.output
+
+    test "the metadata address is refused even when it is the configured SearXNG":
+      let r = runWebSearch(newWebState(), %*{"query": "x"}, scfg("searxng", "http://169.254.169.254"))
+      check not r.ok and "metadata" in r.output
+
+    test "no backend, a bad query and a missing key are tool errors that never touch the network":
+      writeFile(logFile, "")
+      check "no search backend" in runWebSearch(newWebState(), %*{"query": "x"}, wcfg()).output
+      check "credential" in runWebSearch(newWebState(), %*{"query": "sk-" & "a".repeat(40)}, scfg("searxng", searxUrl)).output
+      delEnv("MALYUTKA_TEST_SEARCH_KEY")
+      let r = runWebSearch(newWebState(), %*{"query": "x"}, scfg("brave", "https://127.0.0.1:" & $httpsPort & "/brave"))
+      check not r.ok and "MALYUTKA_TEST_SEARCH_KEY is not set" in r.output
+      putEnv("MALYUTKA_TEST_SEARCH_KEY", "bad key\nwith newline")
+      check "does not look like an API key" in runWebSearch(newWebState(), %*{"query": "x"}, scfg("brave", "https://127.0.0.1:" & $httpsPort & "/brave")).output
+      delEnv("MALYUTKA_TEST_SEARCH_KEY")
+      check served() == ""
+
+    if haveOpenssl:
+      test "Brave and Tavily through the helper over https: the key is read from the NAMED variable and appears nowhere":
+        for (backend, path, key) in [("brave", "/brave", "brave-test-key"), ("tavily", "/tavily", "tavily-test-key")]:
+          putEnv("MALYUTKA_TEST_SEARCH_KEY", key)
+          var c = scfg(backend, "https://127.0.0.1:" & $httpsPort & path)
+          c.webAllowPrivate = @["127.0.0.1"]                  # a local fake: the operator opts in
+          let st = newWebState()
+          let r = runWebSearch(st, %*{"query": "hello"}, c)
+          check r.ok and r.output.splitLines()[0] == "[web_search " & backend & " · 5 results · untrusted search results]"
+          check key notin r.output and key notin $r.eventPayload and r.eventPayload["backend"].getStr == backend
+          putEnv("MALYUTKA_TEST_SEARCH_KEY", "wrong-" & key)
+          let bad = runWebSearch(newWebState(), %*{"query": "hello"}, c)
+          check not bad.ok and "wrong-" & key notin bad.output and key notin bad.output
+        delEnv("MALYUTKA_TEST_SEARCH_KEY")
+
+      test "a keyed backend configured with plain http never connects":
+        writeFile(logFile, "")
+        putEnv("MALYUTKA_TEST_SEARCH_KEY", "brave-test-key")
+        defer: delEnv("MALYUTKA_TEST_SEARCH_KEY")
+        var c = scfg("brave", "http://127.0.0.1:" & $httpPort & "/brave")
+        c.webAllowPrivate = @["127.0.0.1"]
+        let r = runWebSearch(newWebState(), %*{"query": "x"}, c)
+        check not r.ok and "requires https" in r.output and served() == ""
 
     test "the helper process is gone after every call (nothing lingers)":
       discard runWebFetch(newWebState(), %*{"url": hurl("/html")}, wcfg())

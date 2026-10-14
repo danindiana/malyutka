@@ -202,6 +202,34 @@ proc looksLikeSecretValue(v: string): bool =
   if "BEGIN PRIVATE KEY" in t or "BEGIN RSA PRIVATE KEY" in t or "BEGIN OPENSSH PRIVATE KEY" in t: return true
   false
 
+proc secretInText*(text: string): bool =
+  ## Free text (a search query) that contains something shaped like a credential.
+  if "PRIVATE KEY" in text: return true
+  for tok in text.split({' ', '\t', '\n', ',', ';', '"', '\'', '=', ':'}):
+    if tok.len > 0 and looksLikeSecretValue(tok): return true
+
+const MaxQueryLen* = 400
+
+proc queryProblem*(q: string): string =
+  ## "" = a query we are willing to send to a third party.
+  let t = q.strip
+  if t.len == 0: return "the query is empty"
+  if t.len > MaxQueryLen: return "the query is longer than " & $MaxQueryLen & " characters"
+  for c in t:
+    if c < ' ' or c == '\x7f': return "the query contains control characters"
+  if secretInText(t): return "the query contains something shaped like a credential"
+
+proc loopbackHost*(host: string): bool =
+  ## "localhost" or a loopback address literal: the only place a search may run unasked.
+  let h = host.toLowerAscii
+  if h == "localhost": return true
+  if not isIpLiteral(h): return false
+  try:
+    let ip = parseIpAddress(h)
+    if ip.family == IpAddressFamily.IPv6: return h == "::1"
+    return ip.address_v4[0] == 127
+  except ValueError: return false
+
 proc secretInUrl*(raw: string): string =
   ## "" if nothing looks like a credential; otherwise what was found. Parameter NAMES count only
   ## with a non-empty value; known secret FORMATS count anywhere in the query or path.
