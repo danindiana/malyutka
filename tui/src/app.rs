@@ -31,6 +31,7 @@ pub struct Config {
     pub allow_shell: bool,
     pub allow_files: bool,
     pub allow_memory: bool,
+    pub allow_process: bool,
     pub personality: String,
     pub context_window: Option<u64>,
     pub compress_next: bool,
@@ -75,7 +76,15 @@ pub struct SkinPick {
     pub orig: Skin,
 }
 
+pub struct BgProc {
+    pub id: String,
+    pub command: String,
+    pub running: bool,
+    pub code: Option<i64>,
+}
+
 pub struct App {
+    pub procs: Vec<BgProc>,
     pub approval: Option<Approval>,
     pub session: Option<String>,
     pub turns: Vec<Turn>,
@@ -109,6 +118,7 @@ pub struct App {
 impl App {
     pub fn new(cfg: Config, skin: Skin, doctor: Vec<(String, String)>) -> App {
         App {
+            procs: vec![],
             approval: None,
             session: None,
             turns: vec![],
@@ -162,6 +172,7 @@ impl App {
             (self.cfg.allow_shell, "--allow-shell"),
             (self.cfg.allow_files, "--allow-files"),
             (self.cfg.allow_memory, "--allow-memory"),
+            (self.cfg.allow_process, "--allow-process"),
         ] {
             if on {
                 args.push(flag.to_string());
@@ -239,6 +250,9 @@ impl App {
             Msg::Exit(code) => {
                 self.run = None;
                 self.approval = None;
+                for p in self.procs.iter_mut() {
+                    p.running = false; // the harness kills background processes when a run ends
+                }
                 // A turn counts (and becomes the resume point) when it ended cleanly.
                 if matches!(code, Some(0) | Some(4)) && !self.run_id.is_empty() {
                     if let Some((prompt, item_start)) = self.cur_prompt.take() {
@@ -403,6 +417,54 @@ impl App {
                     _ => self.items.push(Item::Todo(list)),
                 }
             }
+            "process.started" => {
+                let id = e.s("process");
+                let command = e.s("command");
+                self.items
+                    .push(Item::Note(format!("process {id} started: {command}")));
+                self.procs.push(BgProc {
+                    id,
+                    command,
+                    running: true,
+                    code: None,
+                });
+            }
+            "process.exited" => {
+                let id = e.s("process");
+                let code = e.payload.get("exitCode").and_then(|v| v.as_i64());
+                if let Some(p) = self.procs.iter_mut().find(|p| p.id == id) {
+                    p.running = false;
+                    p.code = code;
+                }
+                self.items.push(Item::Note(format!(
+                    "process {id} exited ({})",
+                    code.map_or("?".to_string(), |c| c.to_string())
+                )));
+            }
+            "process.reaped" => {
+                for p in self.procs.iter_mut() {
+                    p.running = false;
+                }
+                self.items.push(Item::Note(format!(
+                    "{} background process(es) stopped with the run",
+                    e.payload
+                        .get("killed")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                )));
+            }
+            "confinement.limits" => self.items.push(Item::Note(format!(
+                "limits applied: {} MB memory, {} tasks",
+                e.payload
+                    .get("memoryMb")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                e.payload.get("pids").and_then(|v| v.as_u64()).unwrap_or(0)
+            ))),
+            "confinement.degraded" => self.items.push(Item::Warn(format!(
+                "resource limits NOT applied: {}",
+                e.s("reason")
+            ))),
             "context.compacted" => {
                 let n = |k: &str| e.payload.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
                 self.items.push(Item::Note(format!(
@@ -626,6 +688,7 @@ mod tests {
                 allow_shell: false,
                 allow_files: false,
                 allow_memory: false,
+                allow_process: false,
                 personality: String::new(),
                 context_window: None,
                 compress_next: false,
@@ -726,6 +789,7 @@ mod picker_tests {
                 allow_shell: false,
                 allow_files: false,
                 allow_memory: false,
+                allow_process: false,
                 personality: String::new(),
                 context_window: None,
                 compress_next: false,
@@ -938,5 +1002,50 @@ mod picker_tests {
             matches!(&a.items[0], Item::Note(t) if t.contains("12 messages") && t.contains("9000 → 3000"))
         );
         assert!(matches!(&a.items[1], Item::Warn(t) if t.contains("no progress")));
+    }
+
+    #[test]
+    fn process_events_track_background_processes() {
+        let mut a = app();
+        a.on_event(ev(
+            "process.started",
+            serde_json::json!({"process":"p1","command":"sleep 60","pid":123}),
+        ));
+        a.on_event(ev(
+            "process.started",
+            serde_json::json!({"process":"p2","command":"make","pid":124}),
+        ));
+        assert_eq!(a.procs.iter().filter(|p| p.running).count(), 2);
+        a.on_event(ev(
+            "process.exited",
+            serde_json::json!({"process":"p2","exitCode":0}),
+        ));
+        assert_eq!(a.procs.iter().filter(|p| p.running).count(), 1);
+        assert_eq!(a.procs[1].code, Some(0));
+        // a run ending stops everything, whether or not the harness said so
+        a.on_msg(Msg::Exit(Some(0)));
+        assert_eq!(a.procs.iter().filter(|p| p.running).count(), 0);
+    }
+
+    #[test]
+    fn limit_events_and_process_flag() {
+        let mut a = app();
+        a.on_event(ev(
+            "confinement.limits",
+            serde_json::json!({"memoryMb":2048,"pids":512,"applied":true}),
+        ));
+        a.on_event(ev(
+            "confinement.degraded",
+            serde_json::json!({"reason":"no user bus"}),
+        ));
+        assert!(
+            matches!(&a.items[0], Item::Note(t) if t.contains("2048 MB") && t.contains("512 tasks"))
+        );
+        assert!(
+            matches!(&a.items[1], Item::Warn(t) if t.contains("NOT applied") && t.contains("no user bus"))
+        );
+        assert!(!a.run_args("x").contains(&"--allow-process".to_string()));
+        a.cfg.allow_process = true;
+        assert!(a.run_args("x").contains(&"--allow-process".to_string()));
     }
 }

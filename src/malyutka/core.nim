@@ -54,17 +54,22 @@ proc newRunId*(): string =
   "9M14-" & hex
 
 proc defaultProbe(): tuple[ok: bool, detail: string] = probeBwrap()
+proc defaultScopeProbe(): tuple[ok: bool, detail: string] = probeScopes()
 
-proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
-               registry = toolsFor(cfg); layers = defaultLayers();
-               sink: EventSink = nullSink; runId = newRunId();
-               sandboxProbe: SandboxProbe = defaultProbe;
-               journal: Journal = nil;
-               approver: Approver = nil;
-               latch: LatchStore = nil;
-               history: seq[Message] = @[];
-               checkpoint: Checkpoint = nil;
-               archive: ArchiveProc = nil): Future[RunResult] {.async.} =
+proc shutdownTools(registry: ToolRegistry): int =
+  ## Invariant 16: whatever a tool started dies with the run.
+  for _, spec in registry:
+    if spec.shutdown != nil:
+      try: result += spec.shutdown()
+      except CatchableError: discard
+
+proc runAgentBody(p: Provider; task: string; cfg: AgentConfig;
+               registry: ToolRegistry; layers: seq[PolicyLayer];
+               sink: EventSink; runId: string;
+               sandboxProbe: SandboxProbe; scopeProbe: SandboxProbe;
+               journal: Journal; approver: Approver; latch: LatchStore;
+               history: seq[Message]; checkpoint: Checkpoint;
+               archive: ArchiveProc): Future[RunResult] {.async.} =
   let em = newEmitter(runId, sink)
   result.runId = runId
   var names = newJArray()
@@ -74,8 +79,10 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
 
   # Fail closed before the model acts: a sandboxed capability without a
   # working sandbox aborts the run (invariants 5, 6).
+  var hasSandboxTool = false
   for n, spec in registry:
     if spec.capability.realm == erSandbox:
+      hasSandboxTool = true
       try: openWorkspace(cfg.cwd).close()
       except ConfinementError as e:
         discard em.emit("confinement.failed", %*{"tool": n, "reason": e.msg})
@@ -87,6 +94,25 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
           "capability '" & n & "' requires a sandbox: " & detail)
     elif spec.capability.realm == erHost:
       discard em.emit("confinement.waived", %*{"tool": n, "ceiling": $spec.capability.maxEffect})
+
+  # Resource limits (SPEC-008): a transient systemd user scope when available.
+  # `require` refuses the run like a missing sandbox; `auto` runs without the
+  # limits but says so; `off` skips them. Tools get runCfg, which records the outcome.
+  var runCfg = cfg
+  runCfg.unitPrefix = "malyutka-" & runId
+  if hasSandboxTool and cfg.cgroupMode != cmOff and (cfg.limitMemoryMb > 0 or cfg.limitPids > 0):
+    let (ok, detail) = scopeProbe()
+    if ok:
+      runCfg.scopeActive = true
+      discard em.emit("confinement.limits", %*{"backend": detail, "memoryMb": cfg.limitMemoryMb,
+        "pids": cfg.limitPids, "applied": true})
+    elif cfg.cgroupMode == cmRequire:
+      discard em.emit("confinement.failed", %*{"tool": "limits", "reason": detail})
+      raise newException(ConfinementError,
+        "resource limits were required (--cgroups:require) but are unavailable: " & detail)
+    else:
+      discard em.emit("confinement.degraded", %*{"reason": detail, "applied": false,
+        "note": "memory/task limits NOT applied to sandboxed commands"})
 
   # Journal preconditions (fail closed): disjoint from the workspace, and no
   # corruption. Actions a previous run started but never recorded the outcome
@@ -138,6 +164,10 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
     result.messages.add msg(rUser, task)
   else:
     result.messages = @[sys, msg(rUser, task)]
+
+  proc reap() =
+    let n = shutdownTools(registry)
+    if n > 0: discard em.emit("process.reaped", %*{"killed": n})
 
   proc save(status: string) =
     if checkpoint == nil: return
@@ -194,6 +224,7 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
         result.answer = "Halted: " & why
         result.halt = hrContext
         result.messages.add msg(rAssistant, result.answer)
+        reap()
         save("halted")
         return
     let action = await p.next(result.messages, schemas)
@@ -202,6 +233,7 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
       discard em.emit("agent.final", %*{"step": step, "text": action.text})
       result.answer = action.text
       result.halt = hrFinal
+      reap()
       save("answered")
       return
 
@@ -239,6 +271,7 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
         result.answer = "Halted: " & why
         result.halt = hrRepetition
         result.messages.add msg(rAssistant, result.answer)
+        reap()
         save("halted")
         return
 
@@ -342,7 +375,7 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
       var r: ToolResult
       var executed = true
       try:
-        r = registry[call.name].run(call.args, cfg)
+        r = registry[call.name].run(call.args, runCfg)
       except ConfinementError as e:
         executed = false
         # Never retried on the host (invariant 6).
@@ -372,4 +405,24 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
   result.halt = hrMaxSteps
   result.messages.add msg(rAssistant, result.answer)
   discard em.emit("agent.halt", %*{"reason": "maxSteps"})
+  reap()
   save("halted")
+
+proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
+               registry = toolsFor(cfg); layers = defaultLayers();
+               sink: EventSink = nullSink; runId = newRunId();
+               sandboxProbe: SandboxProbe = defaultProbe;
+               scopeProbe: SandboxProbe = defaultScopeProbe;
+               journal: Journal = nil;
+               approver: Approver = nil;
+               latch: LatchStore = nil;
+               history: seq[Message] = @[];
+               checkpoint: Checkpoint = nil;
+               archive: ArchiveProc = nil): Future[RunResult] {.async.} =
+  ## Runs the guidance loop. However it ends (answer, halt, exception), anything a
+  ## tool started is killed: invariant 16.
+  try:
+    result = await runAgentBody(p, task, cfg, registry, layers, sink, runId, sandboxProbe,
+                                scopeProbe, journal, approver, latch, history, checkpoint, archive)
+  finally:
+    discard shutdownTools(registry)

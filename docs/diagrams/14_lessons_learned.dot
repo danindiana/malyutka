@@ -32,4 +32,10 @@ digraph lessons {
       r1 [label="0.3.1–0.3.3 archives shipped a compiled test binary", color="#58a6ff"];
       rf [label="Fix: tools/release.sh refuses ELF files;\n.gitignore + CI release-hygiene job", color="#3fb950"];
       r1 -> rf; }
+    subgraph cluster_p { label="Process lifetime (0.7.0)"; fontcolor="#f0883e"; color="#f0883e"; style="rounded";
+      p1 [label="killing only the outer bwrap right after start\norphaned the sandbox (PDEATHSIG not yet armed);\nmy first I16 tests passed because they only checked the outer pid", color="#f85149", fillcolor="#3a1518"];
+      pf [label="Fix: SIGSTOP outer, enumerate descendants, SIGKILL all.\nTests look for survivors by a unique tag in /proc/*/cmdline,\nkill 6 processes immediately after start", color="#3fb950"];
+      p2 [label="raw cgroup files cannot be used: a login session is outside\nuser@UID.service and cannot be migrated (EACCES)", color="#d29922"];
+      p2f [label="Fix: limits through systemd-run --user --scope (probed;\ndegrade visibly, or refuse with --cgroups:require)", color="#3fb950"];
+      p1 -> pf; p2 -> p2f; }
 }

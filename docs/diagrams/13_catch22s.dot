@@ -40,4 +40,9 @@ digraph catch22 {
       g2 [label="…but the provider call is what the full window blocks", color="#39c5cf"];
       g3 [label="Escape: start at 75 % so the summariser still fits;\nfailure continues uncompacted; only >100 %\nhalts (never silent truncation); archive first", color="#3fb950"];
       g1 -> g3; g2 -> g3; }
+    subgraph cluster_h { label="8 · Limits need a service that may not exist"; fontcolor="#39c5cf"; color="#39c5cf"; style="rounded";
+      h1 [label="Memory/task limits need a systemd user manager and bus", color="#39c5cf"];
+      h2 [label="CI runners, containers and SSH-less sessions may have neither", color="#39c5cf"];
+      h3 [label="Escape: functional probe at start; auto = run, say so\n(confinement.degraded); require = refuse (exit 3);\noff = skip. Containment does not depend on it.", color="#3fb950"];
+      h1 -> h3; h2 -> h3; }
 }

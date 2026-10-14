@@ -4,7 +4,7 @@
 ## the model (removing a capability removes it from the model's context).
 
 import std/[json, tables]
-import ./[types, sandbox, filetools, memory, latch]
+import ./[types, sandbox, filetools, memory, latch, process]
 export filetools.ToolProc
 
 type
@@ -15,6 +15,7 @@ type
     parameters*: JsonNode
     effectOf*: EffectProc       ## effect of THIS call, before execution
     run*: ToolProc
+    shutdown*: proc(): int {.closure.}   ## kills what the tool started; returns how many (nil = nothing)
   ToolRegistry* = OrderedTable[string, ToolSpec]
 
 proc echoSpec(): ToolSpec =
@@ -58,8 +59,10 @@ proc shellSpec(cfg: AgentConfig): ToolSpec =
         # bwrap binds: no second path resolution between check and mount.
         let ws = openWorkspace(cfg.cwd)
         defer: ws.close()
-        r = runBounded(@[exe] & bwrapArgv(ws.path, cmd), cfg.shellTimeoutSec,
-                       cfg.maxOutputBytes, ws.path, keepFd = ws.fd)
+        let (argv, extra) = sandboxCommand(exe, ws.path, cmd, cfg.scopeActive, cfg.unitPrefix,
+                                           "sh", cfg.limitMemoryMb, cfg.limitPids)
+        r = runBounded(argv, cfg.shellTimeoutSec, cfg.maxOutputBytes, ws.path,
+                       keepFd = ws.fd, extraEnv = extra)
       of erHost:
         r = runBounded(@["/bin/sh", "-c", cmd], cfg.shellTimeoutSec,
                        cfg.maxOutputBytes, cfg.cwd, hostTree = true)
@@ -87,6 +90,19 @@ proc toolsFor*(cfg: AgentConfig): ToolRegistry =
   result["echo"] = echoSpec()
   if cfg.allowShell:
     result["shell"] = shellSpec(cfg)
+  if cfg.allowProcess:
+    let mgr = newProcManager(cfg.maxProcesses)
+    result["process"] = ToolSpec(
+      capability: Capability(name: "process", realm: erSandbox, maxEffect: b2BroadWorkspace),
+      description: "Run long-lived commands in the sandbox without blocking. " &
+        "action=start{command} returns an id; poll{id} returns new output and state; " &
+        "log{id,tail?}; kill{id}; list. At most " & $cfg.maxProcesses & " run at once and all stop when the run ends.",
+      parameters: %*{"type": "object", "properties": {"action": {"type": "string",
+        "enum": ["start", "poll", "log", "kill", "list"]}, "command": {"type": "string"},
+        "id": {"type": "string"}, "tail": {"type": "integer"}}, "required": ["action"]},
+      effectOf: effectOfProcess,
+      run: proc(args: JsonNode; c: AgentConfig): ToolResult = runProcess(mgr, args, c),
+      shutdown: proc(): int = shutdown(mgr))
   if cfg.allowMemory and cfg.stateDir.len > 0:
     result["memory"] = fileSpec("memory",
       "Persistent notes that survive across sessions (max 8 KiB). " &

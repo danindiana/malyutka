@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.7.0 background processes and resource limits (M3-lite)
+
+- **`process` tool** (`--allow-process`, `--max-processes:N`): `start`/`poll`/`log`/`kill`/`list` over the
+  same bwrap broker as `shell`; output kept in a 64 KiB ring (drops are reported); the denylist and
+  dangerous-command layers see `process start` like `shell`. Events: `process.started`,
+  `process.exited`, `process.reaped`. Invariant **I16**: nothing the tool started outlives the run
+  (answer, halt, exception, or harness SIGKILL).
+- **Found by testing**: killing only the outer `bwrap` right after start can orphan the namespace init and
+  leave the command running. All sandbox kills (tool, run end, shell timeouts) now `SIGSTOP` the outer
+  process, enumerate its descendants from `/proc` and `SIGKILL` them all. My first I16 tests passed while the
+  bug was live because they only checked the outer pid; they now look for survivors by a unique tag in
+  `/proc/*/cmdline`.
+- **Resource limits** (`--cgroups:auto|require|off`, `--limit-memory:MB` default 2048, `--limit-pids:N`
+  default 512): sandboxed commands run inside a transient `systemd-run --user --scope` with `MemoryMax`,
+  `MemorySwapMax=0` and `TasksMax`. Raw cgroup files cannot be used (a login session is outside
+  `user@UID.service`; migrating a process across is refused). A functional probe runs at start:
+  applied (`confinement.limits`), skipped visibly (`confinement.degraded`), refused (`require`, exit 3).
+  `malyutka doctor` reports it.
+- `bwrap` now starts with `--clearenv` and re-sets the same five variables, so the variables `systemd-run`
+  needs can never reach the sandboxed command (I9). Existing adversarial suites unchanged and passing.
+- TUI: `--allow-process`, `/tools process`, `/ps`, `⚙N` in the status bar, process and limit notices.
+- Tests: `tests/test_process.nim` (19 tests; 13 mutants killed incl. the start-up race, shutdown, the
+  `finally`, the event, the cap, the ring, `--clearenv`, the scope prefix, `require`, the denylist, the
+  classification, probe skipping). The real-scope tests (a fork loop capped, a memory hog killed while the
+  same command succeeds unlimited) run only where `systemd-run --user --scope` works and skip otherwise.
+  Integration 14; live battery gains a `process` check.
+
 ## 0.6.0 context compaction and ranked session search (M5-lite)
 
 - **Compaction** (`--context-window:N`, default 32768; `--compress`): above 75 % of the

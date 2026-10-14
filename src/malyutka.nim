@@ -1,7 +1,7 @@
 import std/[asyncdispatch, json, os, parseopt, strutils, tables]
 import malyutka/[types, provider, core, session, events, config, sandbox, journal, approval, memory, latch, tools]
 
-const Version = "0.6.0"
+const Version = "0.7.0"
 
 proc usage() =
   echo """malyutka // 9M14 - Linux-native Nim agent harness (v""" & Version & """)
@@ -39,6 +39,11 @@ Options:
   --resume-despite-unknown   Resume even if the session has unresolved UNKNOWN_OUTCOME actions
   --context-window:N         Model context size in tokens; compaction starts at 75% (default 32768, 0 = off)
   --compress                 Compact the loaded history before the first call (with --resume)
+  --allow-process            Enable the background `process` tool (start/poll/log/kill/list; sandboxed)
+  --max-processes:N          Concurrent background processes (default 4)
+  --cgroups:auto|require|off Resource limits via a systemd user scope (default auto: degrade visibly)
+  --limit-memory:MB          MemoryMax for sandboxed commands (default 2048, 0 = none)
+  --limit-pids:N             TasksMax for sandboxed commands (default 512, 0 = none)
   --allow-memory             Enable the `memory` tool and inject memory.md into the prompt
   --soul:PATH                Operator persona file (default <state>/SOUL.md if present)
   --personality:NAME         concise|teacher|kawaii|terse-ops
@@ -301,6 +306,9 @@ proc doctor() =
   echo "cwd: ", getCurrentDir()
   let (ok, detail) = probeBwrap()
   echo "sandbox: ", (if ok: "bwrap OK (" & detail & ")" else: "UNAVAILABLE - " & detail)
+  let (sok, sdetail) = probeScopes()
+  echo "limits: ", (if sok: "systemd user scope OK (--cgroups:auto applies --limit-memory/--limit-pids)"
+                    else: "UNAVAILABLE - " & sdetail & " (limits are not applied; --cgroups:require would refuse)")
   echo "journal: ", journalPath()
   if not ok:
     echo "note: --allow-shell will refuse to run until the sandbox probe passes."
@@ -340,6 +348,11 @@ proc main() =
         of "allow-shell": cfg.allowShell = true
         of "allow-files": cfg.allowFiles = true
         of "allow-memory": cfg.allowMemory = true
+        of "allow-process": cfg.allowProcess = true
+        of "max-processes": cfg.maxProcesses = parseInt(val)
+        of "cgroups": cfg.cgroupMode = parseCgroupMode(val)
+        of "limit-memory": cfg.limitMemoryMb = parseInt(val)
+        of "limit-pids": cfg.limitPids = parseInt(val)
         of "context-window": cfg.contextWindow = parseInt(val)
         of "compress": cfg.compressNow = true
         of "resume": resumeSpec = val

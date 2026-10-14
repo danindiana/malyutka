@@ -96,3 +96,25 @@ answer must still contain the number.
   passed on gpt-oss:20b in two consecutive runs.
 - Final state of the full 4-model run before those two battery fixes: FAIL=0, SKIP=2 (the two cases
   above); after them, the affected checks pass on rerun except the Ollama-side qwen3.5:9b compaction case.
+
+## Addendum (Round 3, v0.7.0): process check
+
+A tenth check, `process`, asks the model to start `sleep 45 # <unique tag>` with the `process` tool, poll it, and
+report; whatever it did, the harness must have emitted `process.started` and **no process carrying the tag may
+survive the run** (read from `/proc/*/cmdline`, excluding the checker itself).
+
+| Model | process |
+|---|---|
+| qwen3.5:9b | PASS |
+| gpt-oss:20b | PASS |
+
+Only these two models were run for this check. The same work found and fixed a real bug that the first version
+of the unit tests did not catch: killing the outer `bwrap` immediately after start could orphan the sandbox (see
+CHANGELOG 0.7.0 and invariant 16); the live check and the integration test (`SIGKILL` of the harness while a
+process runs) would have flagged it.
+
+Host facts recorded for the limits backend: cgroup v2; `user@1000.service` delegated, but the login session
+(`session-c1.scope`) is outside it and a process cannot be migrated across (EACCES), so limits use
+`systemd-run --user --scope`, which works here (verified: fork loop capped with `Cannot fork`, a 900 MB
+allocation killed under a 200 MB limit and succeeding with no limit). Not verified: CI runners and containers
+(the code degrades visibly; CI exercises the degraded path and skips the real-scope tests if they cannot run).

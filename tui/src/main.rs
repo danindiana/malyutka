@@ -25,6 +25,7 @@ USAGE: malyutka-tui [OPTIONS]
   --ollama [url]          use local Ollama (default $OLLAMA_HOST or 127.0.0.1:11434)
   --allow-shell           allow the sandboxed shell tool
   --allow-files           allow read_file/search_files/write_file/patch/todo (workspace only)
+  --allow-process         enable the background process tool (sandboxed, max 4)
   --allow-memory          enable the memory tool and inject memory.md
   --personality <name>    concise | teacher | kawaii | terse-ops
   --context-window <n>    model context size in tokens (compaction starts at 75%)
@@ -39,6 +40,7 @@ fn parse_args() -> Result<(Config, String), String> {
         allow_shell: false,
         allow_files: false,
         allow_memory: false,
+        allow_process: false,
         personality: String::new(),
         context_window: None,
         compress_next: false,
@@ -62,6 +64,7 @@ fn parse_args() -> Result<(Config, String), String> {
             "--allow-shell" => cfg.allow_shell = true,
             "--allow-files" => cfg.allow_files = true,
             "--allow-memory" => cfg.allow_memory = true,
+            "--allow-process" => cfg.allow_process = true,
             "--personality" => cfg.personality = val("--personality")?,
             "--context-window" => {
                 cfg.context_window = Some(
@@ -206,6 +209,28 @@ fn run_command(app: &mut App, line: &str, tx: &Sender<Msg>) {
             let o = runner::capture(&app.cfg.bin, &["sessions", &format!("--search:{arg}")]);
             app.note(o.trim_end().to_string());
         }
+        "/ps" => {
+            if app.procs.is_empty() {
+                app.note("no background processes in this session");
+            } else {
+                let lines: Vec<String> = app
+                    .procs
+                    .iter()
+                    .map(|p| {
+                        let st = if p.running {
+                            "running".to_string()
+                        } else {
+                            format!(
+                                "exited {}",
+                                p.code.map_or("?".to_string(), |c| c.to_string())
+                            )
+                        };
+                        format!("{}  {st}  {}", p.id, p.command)
+                    })
+                    .collect();
+                app.note(lines.join("\n"));
+            }
+        }
         "/mandates" => {
             let o = runner::capture(&app.cfg.bin, &["mandate"]);
             app.note(o.trim_end().to_string());
@@ -231,11 +256,12 @@ fn run_command(app: &mut App, line: &str, tx: &Sender<Msg>) {
                 "files" => app.cfg.allow_files = !app.cfg.allow_files,
                 "shell" => app.cfg.allow_shell = !app.cfg.allow_shell,
                 "memory" => app.cfg.allow_memory = !app.cfg.allow_memory,
+                "process" => app.cfg.allow_process = !app.cfg.allow_process,
                 _ => {}
             }
             app.note(format!(
-                "tools: files={} shell={} memory={}   (toggle: /tools files|shell|memory)",
-                app.cfg.allow_files, app.cfg.allow_shell, app.cfg.allow_memory
+                "tools: files={} shell={} memory={} process={}   (toggle: /tools files|shell|memory|process)",
+                app.cfg.allow_files, app.cfg.allow_shell, app.cfg.allow_memory, app.cfg.allow_process
             ));
         }
         "/model" | "/models" if arg.is_empty() => open_picker(app),

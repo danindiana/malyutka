@@ -92,6 +92,23 @@ class Partial(unittest.TestCase):
         self.assertTrue(any("2 decisions" in b for b in chk.invariants(t, partial=True)))
 
 
+class Survivors(unittest.TestCase):
+    def test_finds_a_tagged_process_and_never_counts_itself(self):
+        import subprocess
+        tag = f"selftag-{os.getpid()}-xyz"
+        p = subprocess.Popen(["sh", "-c", f"sleep 30; true # {tag}"])
+        try:
+            import time
+            time.sleep(0.3)
+            self.assertGreaterEqual(chk.survivors(tag), 1)
+        finally:
+            p.kill()
+            p.wait()
+        time.sleep(0.2)
+        # the caller's own argv contains the tag too (it is in this very string): not counted
+        self.assertEqual(chk.survivors("selftag-never-started-" + tag), 0)
+
+
 class Has(unittest.TestCase):
     def test_exact_and_prefix_matching(self):
         t = good()

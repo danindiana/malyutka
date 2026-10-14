@@ -40,7 +40,7 @@ let denylistLayer* = PolicyLayer(id: "heuristic.denylist",
               cfg: AgentConfig): tuple[verdict: Verdict, reason: string] =
     ## UX speed bump only. NOT a security boundary: trivially bypassed by
     ## quoting, aliases, `sh -c`, absolute paths. Confinement is the boundary.
-    if call.name == "shell" and call.args.kind == JObject and call.args.hasKey("command"):
+    if call.name in ["shell", "process"] and call.args.kind == JObject and call.args.hasKey("command"):
       let c = call.args["command"].getStr.toLowerAscii
       for needle in ["rm -rf /", "mkfs", "shutdown", "reboot", ":(){ :|:& };:",
                      "dd of=/dev/", "of=/dev/sd", "of=/dev/nvme", "> /dev/sd"]:
@@ -88,7 +88,7 @@ let dangerousLayer* = PolicyLayer(id: "approval.dangerous",
     ## Legitimate-but-risky actions need an operator's OK. DENY-class commands
     ## are handled by the denylist and never reach an approver.
     if call.args.kind == JObject:
-      if call.name == "shell" and call.args.hasKey("command") and
+      if call.name in ["shell", "process"] and call.args.hasKey("command") and
          call.args["command"].kind == JString:
         let why = dangerousShell(compact(call.args["command"].getStr))
         if why.len > 0: return (vAsk, why)

@@ -36,6 +36,7 @@ pub fn status_text(app: &App, width: usize) -> String {
         &app.cfg.model
     };
     let model = transcript::trunc(model, 26);
+    let nproc = app.procs.iter().filter(|p| p.running).count();
     let turns = if app.turns.is_empty() {
         String::new()
     } else {
@@ -45,7 +46,12 @@ pub fn status_text(app: &App, width: usize) -> String {
         format!("step {}", app.step)
     } else {
         "idle".to_string()
-    } + &turns;
+    } + &turns
+        + &(if nproc > 0 {
+            format!(" ⚙{nproc}")
+        } else {
+            String::new()
+        });
     let el = if app.busy() {
         format!("{}s", app.started.elapsed().as_secs())
     } else {
@@ -423,6 +429,7 @@ mod tests {
                 allow_shell: true,
                 allow_files: false,
                 allow_memory: false,
+                allow_process: false,
                 personality: String::new(),
                 context_window: None,
                 compress_next: false,
@@ -571,5 +578,24 @@ mod tests {
             item_start: 0,
         });
         assert!(status_text(&a, 80).contains("↺1"));
+    }
+
+    #[test]
+    fn status_bar_counts_running_processes() {
+        let mut a = app();
+        assert!(!status_text(&a, 90).contains('⚙'));
+        a.procs.push(crate::app::BgProc {
+            id: "p1".into(),
+            command: "x".into(),
+            running: true,
+            code: None,
+        });
+        a.procs.push(crate::app::BgProc {
+            id: "p2".into(),
+            command: "y".into(),
+            running: false,
+            code: Some(0),
+        });
+        assert!(status_text(&a, 90).contains("⚙1"));
     }
 }

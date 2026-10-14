@@ -4,6 +4,7 @@
 Usage: m2_live_check.py invariants [--partial] TRACE
        m2_live_check.py has TRACE KIND [key=value ...]   (key~=value is a prefix match)
        m2_live_check.py count TRACE KIND
+       m2_live_check.py survivors TAG       (prints how many processes carry TAG in their command line)
 Exit 0 = true / no violations; 1 = false / violations (printed); 2 = usage.
 
 `--partial` is for a run that was killed (timeout) or died on a provider error:
@@ -17,6 +18,7 @@ result, and the missing final/halt is expected; every other rule still applies.
   * the run ends in agent.final or agent.halt
 """
 import json
+import os
 import sys
 
 
@@ -89,7 +91,27 @@ def has(events, kind, conds):
     return False
 
 
+def survivors(tag, proc="/proc"):
+    """Processes whose argv contains `tag`, read from /proc (never pgrep -f), excluding
+    this process: its own argv holds the tag, the classic self-match."""
+    n = 0
+    me = os.getpid()
+    for d in os.listdir(proc):
+        if not d.isdigit() or int(d) == me:
+            continue
+        try:
+            raw = open(f"{proc}/{d}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            continue
+        if tag in raw:
+            n += 1
+    return n
+
+
 def main(argv):
+    if len(argv) >= 3 and argv[1] == "survivors":
+        print(survivors(argv[2]))
+        return 0
     if len(argv) < 3:
         print(__doc__)
         return 2

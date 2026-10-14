@@ -341,5 +341,70 @@ PY
 unset MALYUTKA_STATE_DIR
 export MALYUTKA_STATE_DIR="$WORK/state"
 
+# 14. Background processes and resource limits through the real CLI.
+mkdir -p "$WORK/m6" && cd "$WORK/m6" || exit 2
+P6=$((P5 + 30))
+export MALYUTKA_STATE_DIR="$WORK/m6state"
+tag_count() { # count processes whose command line contains $1 (read from /proc, never pgrep -f)
+  python3 -I - "$1" <<'PY'
+import os, sys
+n = 0
+for d in os.listdir("/proc"):
+    if d.isdigit() and int(d) != os.getpid():     # never count ourselves: our argv holds the tag
+        try:
+            if sys.argv[1] in open(f"/proc/{d}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="replace"): n += 1
+        except OSError:
+            pass
+print(n)
+PY
+}
+TAG1="m6tag-$$-end"
+python3 -c 'import json,sys; print(json.dumps([[{"name":"process","args":{"action":"start","command":"sleep 91; true # "+sys.argv[1]}}]]))' "$TAG1" > "$WORK/m6a.json"
+python3 -I "$HERE/fake_script.py" "$P6" "$WORK/m6a.json" >/dev/null 2>&1 & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$P6 --allow-process --cgroups:off --json 'start one' \
+  > "$WORK/m6a.trace" 2>/dev/null; rc=$?
+sleep 1
+if [ $rc -eq 0 ] && grep -q '"process.started"' "$WORK/m6a.trace" && grep -q '"process.reaped"' "$WORK/m6a.trace" \
+   && [ "$(tag_count "$TAG1")" = 0 ]; then
+  ok "process: a run that ends with a process running reaps it (event, no survivor)"
+else bad "process reaping (exit $rc, survivors=$(tag_count "$TAG1")): $(grep process "$WORK/m6a.trace" | head -3)"; fi
+
+TAG2="m6tag-$$-kill9"
+python3 -c 'import json,sys; print(json.dumps([[{"name":"process","args":{"action":"start","command":"sleep 92; true # "+sys.argv[1]}}],[{"name":"shell","args":{"command":"sleep 20"}}]]))' "$TAG2" > "$WORK/m6b.json"
+python3 -I "$HERE/fake_script.py" $((P6 + 1)) "$WORK/m6b.json" >/dev/null 2>&1 & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P6 + 1)) --allow-process --allow-shell --cgroups:off --json 'start, then idle' \
+  > "$WORK/m6b.trace" 2>/dev/null &
+M=$!
+for _ in $(seq 1 50); do grep -q '"process.started"' "$WORK/m6b.trace" 2>/dev/null && break; sleep 0.1; done
+sleep 1.2
+before=$(tag_count "$TAG2")
+kill -9 $M; wait $M 2>/dev/null; sleep 1.5
+after=$(tag_count "$TAG2")
+if [ "$before" -ge 1 ] && [ "$after" = 0 ]; then ok "process: SIGKILL of the harness takes the background process with it ($before -> $after)"
+else bad "harness SIGKILL left processes: before=$before after=$after"; fi
+"$BIN" journal >/dev/null 2>&1; [ $? -le 5 ] || bad "journal broken after kill -9 with a process"
+
+# limits: functional probe, and a PATH without systemd-run to force "unavailable"
+echo '[[{"name":"shell","args":{"command":"echo limited"}}]]' > "$WORK/m6c.json"
+python3 -I "$HERE/fake_script.py" $((P6 + 2)) "$WORK/m6c.json" >/dev/null 2>&1 & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P6 + 2)) --allow-shell --json 'limits' > "$WORK/m6c.trace" 2>/dev/null
+if grep -q '"confinement.limits"' "$WORK/m6c.trace" || grep -q '"confinement.degraded"' "$WORK/m6c.trace"; then
+  ok "limits: --cgroups:auto reports either applied limits or a visible degradation ($(grep -o 'confinement\.[a-z]*' "$WORK/m6c.trace" | head -1))"
+else bad "no limits event: $(cat "$WORK/m6c.trace" | head -3)"; fi
+NOSD="$WORK/nosd-bin"; mkdir -p "$NOSD"; ln -sf "$(command -v bwrap)" "$NOSD/bwrap"; ln -sf "$(command -v python3)" "$NOSD/python3"
+echo '[[{"name":"shell","args":{"command":"echo degraded-ok"}}]]' > "$WORK/m6d.json"
+python3 -I "$HERE/fake_script.py" $((P6 + 3)) "$WORK/m6d.json" >/dev/null 2>&1 & sleep 0.5
+PATH="$NOSD" "$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P6 + 3)) --allow-shell --cgroups:auto --json 'degrade' > "$WORK/m6d.trace" 2> "$WORK/m6d.err"; rc=$?
+if [ $rc -eq 0 ] && grep -q '"confinement.degraded"' "$WORK/m6d.trace" && grep -q 'degraded-ok' "$WORK/m6d.err"; then
+  ok "limits: no systemd-run + auto -> runs, visibly without limits"
+else bad "auto degrade (exit $rc): $(cat "$WORK/m6d.err" | tail -2)"; fi
+PATH="$NOSD" "$BIN" run --provider:mock --allow-shell --cgroups:require 'x' >/dev/null 2>&1; rc=$?
+[ $rc -eq 3 ] && ok "limits: no systemd-run + --cgroups:require -> refused (exit 3)" || bad "cgroups require exit $rc"
+PATH="$NOSD" "$BIN" run --provider:mock --allow-shell --cgroups:off --json 'x' 2>/dev/null | grep -q 'confinement.limits\|confinement.degraded' \
+  && bad "--cgroups:off still reported limits" || ok "limits: --cgroups:off is silent"
+"$BIN" doctor 2>/dev/null | grep -q '^limits: ' && ok "doctor reports the limits backend" || bad "doctor has no limits line"
+unset MALYUTKA_STATE_DIR
+export MALYUTKA_STATE_DIR="$WORK/state"
+
 echo "integration: $pass passed, $fail failed"
 [ $fail -eq 0 ]
