@@ -432,6 +432,7 @@ mod tests {
                 allow_process: false,
                 allow_skills: false,
                 allow_mcp: false,
+                allow_web: false,
                 personality: String::new(),
                 context_window: None,
                 compress_next: false,

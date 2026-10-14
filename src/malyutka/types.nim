@@ -43,6 +43,7 @@ type
     erHost = "host"             ## child process with the operator's full authority
     erRemote = "remote"         ## reserved
     erExternal = "external"     ## a server process speaking a protocol (MCP): ceiling set by the operator
+    erNetwork = "network"       ## outbound web access through the sandboxed helper (SPEC-011)
 
   EffectClass* = enum
     ## Blast radius of an action. Ordered: higher = more consequential.
@@ -86,6 +87,12 @@ type
     soul*: string               ## operator text prepended to the system prompt
     personality*: string
     memoryText*: string         ## snapshot of memory.md taken at run start
+    allowWeb*: bool             ## web_fetch / web_search through the sandboxed helper (SPEC-011)
+    webDeny*: seq[string]       ## domain denylist (from <state>/web.json)
+    webAllowPrivate*: seq[string]  ## hosts the operator allows on private addresses
+    webTimeoutSec*: int
+    webMaxChars*: int
+    webCaFile*: string
     allowSkills*: bool          ## skills_list / skill_view / skill_save (SPEC-009)
     allowMcp*: bool             ## MCP stdio client (SPEC-010)
     allowProcess*: bool         ## enable the background `process` tool
@@ -118,7 +125,8 @@ type
 proc baseConfig*(): AgentConfig =
   ## Defaults with no environment or filesystem input (tests use this).
   AgentConfig(maxSteps: 16, cwd: ".", allowShell: false, allowFiles: false, allowMemory: false,
-    allowSkills: false, allowMcp: false,
+    allowSkills: false, allowMcp: false, allowWeb: false,
+    webTimeoutSec: 20, webMaxChars: 15000,
     allowProcess: false, cgroupMode: cmAuto, limitMemoryMb: 2048, limitPids: 512, maxProcesses: 4,
     scopeActive: false, unitPrefix: "malyutka",
     approvals: amDeny, approvalTimeoutSec: 300, unconfinedHost: false,

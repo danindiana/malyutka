@@ -50,4 +50,14 @@ digraph catch22 {
       i2 [label="The sandbox gives them none of it, by design", color="#f85149"];
       i3 [label="Escape: sandboxed by default (workspace + /usr only);\nsandbox:false is an explicit per-server config AND the\n--unconfined-host waiver (announced); every call still asks;\nceiling B0-B2 chosen by the operator", color="#3fb950"];
       i1 -> i3; i2 -> i3; }
+    subgraph cluster_j { label="10 · Useful web access vs egress control"; fontcolor="#39c5cf"; color="#39c5cf"; style="rounded";
+      j1 [label="Research needs many fetches, and unattended runs have no approver", color="#39c5cf"];
+      j2 [label="Every URL/query can carry data out; every page can carry instructions in", color="#f85149"];
+      j3 [label="Escape: every call asks; a latched mandate (tools, budget, TTL) covers unattended research;\nURLs with secrets/private targets are DENIED outright; page text is bounded, labelled data;\nTLS/HTML code sits in a no-filesystem sandbox", color="#3fb950"];
+      j1 -> j3; j2 -> j3; }
+    subgraph cluster_k { label="11 · TLS needs libssl, the harness must not"; fontcolor="#58a6ff"; color="#58a6ff"; style="rounded";
+      k1 [label="Nim -d:ssl loads OpenSSL eagerly: a host without libssl cannot start the binary", color="#58a6ff"];
+      k2 [label="Web access needs TLS", color="#58a6ff"];
+      k3 [label="Escape: TLS lives only in malyutka_web; malyutka stays libssl-free;\nmissing helper/libssl = tool not registered + web.unavailable", color="#3fb950"];
+      k1 -> k3; k2 -> k3; }
 }

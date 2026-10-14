@@ -46,6 +46,7 @@ proc loadConfig*(path: string; base = defaultConfig()): AgentConfig =
   if j.hasKey("maxSteps"): result.maxSteps = j["maxSteps"].getInt
   if j.hasKey("allowShell"): result.allowShell = j["allowShell"].getBool
   if j.hasKey("allowFiles"): result.allowFiles = j["allowFiles"].getBool
+  if j.hasKey("allowWeb"): result.allowWeb = j["allowWeb"].getBool
   if j.hasKey("allowSkills"): result.allowSkills = j["allowSkills"].getBool
   if j.hasKey("allowMcp"): result.allowMcp = j["allowMcp"].getBool
   if j.hasKey("allowProcess"): result.allowProcess = j["allowProcess"].getBool

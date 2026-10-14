@@ -134,3 +134,21 @@ no server process carrying the unique tag may survive the run.
 
 Only these two models were run for these checks. The first `mcp` run failed for both models because the check itself did
 not create the state directory before writing `mcp.json` (no server was configured, so none connected); fixed and rerun.
+
+## Addendum (Web fetch, unreleased): the `web` check
+
+`web`: the model is asked to fetch `https://example.com/` with `web_fetch` and give the title; the harness must have
+asked first (`approval.request` for `web_fetch`, answered `once` over the stdin channel), `web.fetched` for
+`example.com` must have been emitted, and the page text must have reached the model. The request goes through the
+sandboxed `malyutka_web` helper (DNS and TLS verification inside bwrap with network and no filesystem).
+
+| Model | web |
+|---|---|
+| qwen3.5:9b | PASS |
+| gpt-oss:20b | PASS |
+
+Also checked by hand: `localtest.me` (a public name that resolves to 127.0.0.1) is refused by the helper after
+approval; literal private/metadata addresses, non-canonical IP spellings and credential-looking query parameters are
+denied by `web.url` before any approver is asked, even with `--approvals:off`; and the TUI walkthrough (modal with the
+exact URL, result note). Only two models were run for this check; `web_search` and its backends (SearXNG, Brave,
+Tavily) are not part of this addendum.

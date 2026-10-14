@@ -27,3 +27,4 @@
 | 14 | lessons learned | Which failures shaped the current design? |
 | 15 | Hermes gap map | What do we have, what are we building, what is deferred? |
 | 16 | TUI integration | How does the Rust TUI talk to the harness? |
+| 17 | web egress | What happens between a web call and the text the model sees? |

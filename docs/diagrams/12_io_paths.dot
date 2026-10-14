@@ -15,9 +15,10 @@ digraph io {
     http [label="HTTP (non-streaming)\nPOST <base>/v1/chat/completions\nBearer key optional · timeout\nnon-2xx → IOError (500 B of body)", color="#58a6ff", fillcolor="#13294d"];
     disk [label="files\njournal.jsonl · runs/*.lock · sessions/*.json\nallowlist.json · memory.md · SOUL.md", shape=folder, color="#d29922", fillcolor="#2e2410"];
     mcpsrv [label="MCP server (stdio)\nJSON-RPC lines both ways\n1 MiB line · 64 KiB result · timeout", color="#f85149", fillcolor="#3a1518"];
+    webio [label="web helper\nstdin: 1 JSON request line\nstdout: 1 JSON reply line\nHTTPS to the internet (vetted IP)", color="#39c5cf", fillcolor="#0d2e2e"];
     child [label="bwrap child\nstdin=/dev/null\nstdout+stderr merged pipe\ncap 64 KiB · timeout → SIGKILL", color="#f0883e", fillcolor="#3a2210"];
     tui [label="malyutka-tui\nreads stdout + stderr\nGET /api/tags (Ollama)", color="#d29922", fillcolor="#2e2410"];
 
-    {argv env cfg stdin} -> h; h -> {stdout stderr exitc}; h -> http [dir=both]; h -> disk; h -> child [dir=both]; h -> mcpsrv [dir=both];
+    {argv env cfg stdin} -> h; h -> {stdout stderr exitc}; h -> http [dir=both]; h -> disk; h -> child [dir=both]; h -> mcpsrv [dir=both]; h -> webio [dir=both];
     stdout -> tui; stderr -> tui; exitc -> tui;
 }

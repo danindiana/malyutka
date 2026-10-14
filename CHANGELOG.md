@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased: web fetch (SPEC-011, part 1)
+
+- **`web_fetch`** (`--web`): fetch one http/https page and return its text (HTML to markdown-ish text, plain text,
+  JSON, XML); paging with `offset`/`char_limit`; in-run memo; result labelled `untrusted page text`.
+  Effect B3, realm `network`, journaled. New invariant **I18**.
+- **A separate helper binary** `malyutka_web` (built by `nimble build` next to `malyutka`) holds everything that
+  touches the network or untrusted markup: a hardened HTTP/1.1 client (one DNS resolution per hop, every answer
+  vetted, connect to a vetted IP, TLS verification with SNI and host-name check, manual redirects re-checked,
+  size/time/header caps), an HTML-to-text converter that does linear work on hostile input, and the metadata
+  floor. It runs inside bwrap with the network shared and **no** filesystem access. It is a separate binary
+  because Nim loads OpenSSL eagerly under `-d:ssl` (found by a spike: with libssl masked the whole harness
+  refused to start), so `malyutka` itself stays libssl-free.
+- Policy: `web.url` denies (never reaches an approver) credentials, userinfo, secret formats, non-http(s),
+  literal private/loopback/link-local/metadata addresses, non-canonical IP spellings, denylisted domains;
+  `web.ask` makes every call ask. `<state>/web.json` (strict file; any defect switches web access off).
+- `malyutka doctor` reports the helper; a missing helper or libssl just means the tool is not registered
+  (`web.unavailable` event).
+- Tests: `tests/test_web.nim` against `tests/fake_web.py` (http and https with a generated certificate).
+
 ## 0.8.0 skills and an MCP client
 
 - **Skills** (`--skills`): `skills_list`, `skill_view`, `skill_save` over `<state>/skills/<name>/SKILL.md`

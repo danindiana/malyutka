@@ -4,7 +4,7 @@
 ## Every Decision names the layer responsible.
 
 import std/[json, strutils]
-import ./types
+import ./[types, urlsafety]
 
 type PolicyLayer* = object
   id*: string
@@ -118,5 +118,30 @@ let mcpAskLayer* = PolicyLayer(id: "mcp.ask",
       (vAsk, "MCP tool " & call.name & " runs outside the harness")
     else: (vAllow, ""))
 
+let webUrlLayer* = PolicyLayer(id: "web.url",
+  check: proc(call: ToolCall; cap: Capability; effect: EffectClass;
+              cfg: AgentConfig): tuple[verdict: Verdict, reason: string] =
+    ## DENY, not ASK: a URL that carries credentials, targets a private/metadata address or a denylisted
+    ## domain must never reach an approver (invariant 18). Checks that need DNS happen in the helper.
+    if call.name == "web_fetch":
+      let url = if call.args.kind == JObject and call.args.hasKey("url") and call.args["url"].kind == JString:
+                  call.args["url"].getStr.strip else: ""
+      let why = urlPolicyReason(url, cfg.webDeny, cfg.webAllowPrivate)
+      if why.len > 0: return (vDeny, why)
+    (vAllow, ""))
+
+let webAskLayer* = PolicyLayer(id: "web.ask",
+  check: proc(call: ToolCall; cap: Capability; effect: EffectClass;
+              cfg: AgentConfig): tuple[verdict: Verdict, reason: string] =
+    ## Every web call asks (mandate, approver or deny): it sends text to a third party and reads
+    ## untrusted text back. Only an operator-trusted loopback search is exempt (askExempt).
+    if cap.realm == erNetwork and not cap.askExempt:
+      var target = call.name
+      if call.name == "web_fetch" and call.args.kind == JObject and call.args.hasKey("url") and call.args["url"].kind == JString:
+        let w = parseWebUrl(call.args["url"].getStr.strip)
+        if w.ok: target = "fetch " & w.host
+      return (vAsk, "web access: " & target)
+    (vAllow, ""))
+
 proc defaultLayers*(): seq[PolicyLayer] =
-  @[confinementLayer, denylistLayer, dangerousLayer, approvalLayer, mcpAskLayer]
+  @[confinementLayer, denylistLayer, dangerousLayer, approvalLayer, mcpAskLayer, webUrlLayer, webAskLayer]

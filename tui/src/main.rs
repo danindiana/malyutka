@@ -26,6 +26,7 @@ USAGE: malyutka-tui [OPTIONS]
   --allow-shell           allow the sandboxed shell tool
   --allow-files           allow read_file/search_files/write_file/patch/todo (workspace only)
   --skills                enable skills_list / skill_view / skill_save (save asks)
+  --web                   enable web_fetch (sandboxed helper; every call asks; needs malyutka_web + libssl)
   --mcp                   connect the MCP servers in <state>/mcp.json (sandboxed, every call asks)
   --allow-process         enable the background process tool (sandboxed, max 4)
   --allow-memory          enable the memory tool and inject memory.md
@@ -45,6 +46,7 @@ fn parse_args() -> Result<(Config, String), String> {
         allow_process: false,
         allow_skills: false,
         allow_mcp: false,
+        allow_web: false,
         personality: String::new(),
         context_window: None,
         compress_next: false,
@@ -71,6 +73,7 @@ fn parse_args() -> Result<(Config, String), String> {
             "--allow-process" => cfg.allow_process = true,
             "--skills" => cfg.allow_skills = true,
             "--mcp" => cfg.allow_mcp = true,
+            "--web" => cfg.allow_web = true,
             "--personality" => cfg.personality = val("--personality")?,
             "--context-window" => {
                 cfg.context_window = Some(
@@ -274,16 +277,18 @@ fn run_command(app: &mut App, line: &str, tx: &Sender<Msg>) {
                 "process" => app.cfg.allow_process = !app.cfg.allow_process,
                 "skills" => app.cfg.allow_skills = !app.cfg.allow_skills,
                 "mcp" => app.cfg.allow_mcp = !app.cfg.allow_mcp,
+                "web" => app.cfg.allow_web = !app.cfg.allow_web,
                 _ => {}
             }
             app.note(format!(
-                "tools: files={} shell={} memory={} process={} skills={} mcp={}   (toggle: /tools files|shell|memory|process|skills|mcp)",
+                "tools: files={} shell={} memory={} process={} skills={} mcp={} web={}   (toggle: /tools files|shell|memory|process|skills|mcp|web)",
                 app.cfg.allow_files,
                 app.cfg.allow_shell,
                 app.cfg.allow_memory,
                 app.cfg.allow_process,
                 app.cfg.allow_skills,
-                app.cfg.allow_mcp
+                app.cfg.allow_mcp,
+                app.cfg.allow_web
             ));
         }
         "/model" | "/models" if arg.is_empty() => open_picker(app),

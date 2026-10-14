@@ -48,6 +48,13 @@ never falls back to the host. Each claim is pinned by a test in
   untrusted; it cannot change the tool list or policy, but it *can* steer the
   model, like any text it reads. Resuming a session re-sends its transcript to
   the provider, including tool output. Session files are 0600 in the state dir.
+- **Web access runs outside the command sandbox, by design, in its own sandbox.** `web_fetch` needs the network,
+  which the shell sandbox never has. It therefore goes through a separate helper binary inside bwrap with
+  network access and no filesystem access (no workspace, no state directory, no `$HOME`). The harness stays free
+  of TLS and of HTML parsing. What this does **not** defend against: a page that persuades the model to put
+  something sensitive into a *search query* or a URL you then approve (read the approval prompt), and
+  prompt-injection text in pages (it is labelled and bounded, not removed). Hosted search APIs (later) receive
+  your queries and a key you chose to give them.
 - Model output is untrusted data. Malyutka does not try to detect prompt
   injection; it limits what an injected instruction can do.
 
