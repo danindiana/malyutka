@@ -20,6 +20,7 @@ proc defaultConfig*(): AgentConfig =
   result = baseConfig()
   result.cwd = getCurrentDir()
   result.theme = thWarsaw
+  result.contextWindow = 32768
   result.providerName = getEnv("MALYUTKA_PROVIDER", "mock")
   result.model = getEnv("MALYUTKA_MODEL", "qwen3.5:latest")
   result.baseUrl = getEnv("MALYUTKA_BASE_URL", "http://127.0.0.1:11434")
@@ -38,6 +39,7 @@ proc loadConfig*(path: string; base = defaultConfig()): AgentConfig =
   if j.hasKey("maxSteps"): result.maxSteps = j["maxSteps"].getInt
   if j.hasKey("allowShell"): result.allowShell = j["allowShell"].getBool
   if j.hasKey("allowFiles"): result.allowFiles = j["allowFiles"].getBool
+  if j.hasKey("contextWindow"): result.contextWindow = j["contextWindow"].getInt
   if j.hasKey("allowMemory"): result.allowMemory = j["allowMemory"].getBool
   if j.hasKey("personality"): result.personality = j["personality"].getStr.toLowerAscii
   if j.hasKey("approvals"): result.approvals = parseApprovalMode(j["approvals"].getStr)

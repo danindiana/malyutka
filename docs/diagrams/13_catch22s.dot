@@ -35,4 +35,9 @@ digraph catch22 {
       f2 [label="…not that its children or remote effects stopped", color="#39c5cf"];
       f3 [label="Escape: label such actions UNKNOWN_OUTCOME,\nnever NOT_EXECUTED (cgroups in M3)", color="#3fb950"];
       f1 -> f3; f2 -> f3; }
+    subgraph cluster_g { label="7 · Compaction needs the model"; fontcolor="#39c5cf"; color="#39c5cf"; style="rounded";
+      g1 [label="Summarising needs a provider call", color="#39c5cf"];
+      g2 [label="…but the provider call is what the full window blocks", color="#39c5cf"];
+      g3 [label="Escape: start at 75 % so the summariser still fits;\nfailure continues uncompacted; only >100 %\nhalts (never silent truncation); archive first", color="#3fb950"];
+      g1 -> g3; g2 -> g3; }
 }

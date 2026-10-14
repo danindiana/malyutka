@@ -424,6 +424,8 @@ mod tests {
                 allow_files: false,
                 allow_memory: false,
                 personality: String::new(),
+                context_window: None,
+                compress_next: false,
                 verbose: false,
                 statusbar: true,
             },

@@ -64,6 +64,34 @@ class Invariants(unittest.TestCase):
         self.assertEqual(chk.invariants(t), [])
 
 
+class Partial(unittest.TestCase):
+    def test_killed_mid_proposal_is_tolerated_only_for_the_last_one(self):
+        t = [e for e in good() if e["kind"] != "agent.final"]
+        t = [e for e in t if e["payload"].get("id") not in ("R-0006",)]   # last proposal has no decision yet
+        self.assertTrue(chk.invariants(t))                                # strict mode flags it
+        self.assertEqual(chk.invariants(t, partial=True), [])
+
+    def test_killed_between_decision_and_result(self):
+        t = [e for e in good() if e["kind"] != "agent.final"]
+        t = [e for e in t if e["kind"] != "tool.result"]
+        t = t[:3]                                                         # proposed, decision(ALLOW), nothing else
+        self.assertEqual(chk.invariants(t, partial=True), [])
+
+    def test_partial_still_flags_real_violations(self):
+        # an earlier proposal with no decision is a violation even in a killed run
+        t = [e for e in good() if e["payload"].get("id") != "R-0003"]
+        t = [e for e in t if e["kind"] != "agent.final"]
+        self.assertTrue(any("0 decisions" in b for b in chk.invariants(t, partial=True)))
+        # a denied call that still ran is a violation in any mode
+        t = good()
+        t.insert(6, ev("tool.result", id="R-0006b", causedBy="R-0006"))
+        self.assertTrue(any("still produced a result" in b for b in chk.invariants(t, partial=True)))
+        # a double decision is a violation in any mode
+        t = good()
+        t.insert(3, ev("policy.decision", id="R-0003b", verdict="ALLOW", causedBy="R-0002"))
+        self.assertTrue(any("2 decisions" in b for b in chk.invariants(t, partial=True)))
+
+
 class Has(unittest.TestCase):
     def test_exact_and_prefix_matching(self):
         t = good()

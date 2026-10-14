@@ -66,3 +66,33 @@ view, the approval modal with its countdown and deny, `/undo`, `/mandates`.
 - Behaviour under long contexts (no compaction yet) and background processes
   (not implemented yet): Rounds 2 and 3.
 - Model-prose quality: not asserted anywhere in this battery.
+
+## Addendum (Round 2, v0.6.0): compaction check
+
+A ninth check, `compaction`, was added: run 1 asks for a 20-line poem plus a number to remember;
+run 2 resumes with `--compress`. The harness must emit `context.compacted`, write the archive
+(0600), leave the labelled summary (not the dropped turns) in the session, and the model's later
+answer must still contain the number.
+
+| Model | compaction |
+|---|---|
+| qwen3.5:9b | PASS on its first run (summary kept the number; archive 2 messages); **SKIP** on two later runs, see below |
+| qwen3.5:27b | PASS |
+| devstral-small-2:24b | PASS |
+| gpt-oss:20b | PASS |
+
+- **qwen3.5:9b SKIPs are an Ollama-side failure, not a harness failure.** The log shows
+  `provider HTTP 500: {"error":{"message":"XML syntax error on line 22: element <function> closed by </parameter>"}}`:
+  Ollama's tool-call parser rejected the model's output. The harness reported it correctly
+  (`guidance failure`, exit 1) and the battery classified the run as cut off. This also explains the
+  one unreproduced failure recorded above: it is very likely the same error. The harness has no
+  retry for transient provider errors (a `todo/` item).
+- **gpt-oss:20b `ask_once` was skipped twice in one full run** (exit 124, killed by the 300 s limit) and
+  failed once in an earlier run with a truncated trace. Cause: my responder answered only the *first*
+  approval request, so when the model retried the command the second ASK waited out the
+  approval timeout (300 s = the run limit). The responder now answers every request, the battery uses
+  `--approval-timeout:60`, and the checker has a `--partial` mode so a killed run is only excused for what
+  a kill can leave open (the last proposal / result). Afterwards `ask_deny`, `ask_once`, `ask_timeout`
+  passed on gpt-oss:20b in two consecutive runs.
+- Final state of the full 4-model run before those two battery fixes: FAIL=0, SKIP=2 (the two cases
+  above); after them, the affected checks pass on rerun except the Ollama-side qwen3.5:9b compaction case.

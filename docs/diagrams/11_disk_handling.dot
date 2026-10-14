@@ -8,7 +8,7 @@ digraph disk {
         label="$MALYUTKA_STATE_DIR  (default ~/.local/state/malyutka)"; fontcolor="#d29922"; color="#d29922"; style="rounded";
         journal [label="journal.jsonl\nO_APPEND|O_NOFOLLOW · 0600\nrecords: \\n json crc \\n\nfdatasync per record", shape=note, color="#d29922", fillcolor="#2e2410"];
         locks [label="runs/<writer>.lock\nflock = liveness\nkernel drops lock on death\nnever deleted (GC deferred)", shape=note, color="#d29922", fillcolor="#2e2410"];
-        sessions [label="sessions/<run>.json\natomic (tmp+fsync+rename) after EVERY step\n0600 · strict decode · meta.parent lineage", shape=note, color="#d29922", fillcolor="#2e2410"];
+        sessions [label="sessions/<run>.json\natomic (tmp+fsync+rename) after EVERY step\n0600 · strict decode · meta.parent lineage\n<run>.archive.jsonl: messages dropped by compaction (append-only, never re-read)\n.index.json: derived search cache, trusted per entry by mtime+size", shape=note, color="#d29922", fillcolor="#2e2410"];
         allow [label="allowlist.json: exact-match grants, 0600, O_NOFOLLOW, owner + CRC\nmemory.md: 8 KiB, 0600, only via the journaled memory tool\nSOUL.md: operator-written, refused if group/world-writable", shape=note, color="#d29922", fillcolor="#2e2410"];
     }
     subgraph cluster_ws {

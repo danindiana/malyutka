@@ -12,6 +12,12 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/sessions", "list saved sessions"),
     ("/resume", "show the resume point, or /resume <id>"),
     ("/memory", "show memory.md (read-only)"),
+    (
+        "/compress",
+        "summarise + archive the conversation before the next prompt",
+    ),
+    ("/ctx", "show or set the context window in tokens"),
+    ("/search", "ranked search over saved sessions"),
     ("/mandates", "list commitment-latch mandates (read-only)"),
     ("/personality", "concise|teacher|kawaii|terse-ops"),
     ("/tools", "toggle files|shell|memory tools"),

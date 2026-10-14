@@ -7,7 +7,8 @@
 #   M2_MODELS="qwen3.5:9b devstral-small-2:24b" tests/m2-live.sh
 #
 # Env: M2_OLLAMA_URL (default http://127.0.0.1:11434), M2_ATTEMPTS (3 per
-# check), M2_TIMEOUT seconds per run (240), M2_BIN (./malyutka).
+# check), M2_TIMEOUT seconds per run (240), M2_BIN (./malyutka), M2_CHECKS (space
+# separated subset, default all), M2_KEEP=1 (keep the scratch dir and print it).
 # Needs bubblewrap for the shell checks, python3, and a built ./malyutka.
 #
 # Results per model and check:
@@ -32,7 +33,7 @@ WORK=$(mktemp -d -t malyutka-m2live-XXXXXX)
 fails=0; skips=0
 declare -A passed_anywhere=() seen_check=()
 log()  { echo "$*" | tee -a "$REPORT"; }
-cleanup() { cd "$ROOT" && rm -rf "${WORK:?}"; }
+cleanup() { cd "$ROOT" || return; if [ -n "${M2_KEEP:-}" ]; then echo "scratch kept: $WORK"; else rm -rf "${WORK:?}"; fi; }
 trap cleanup EXIT
 
 [ -x "$BIN" ] || { echo "build first: nimble build -y" >&2; exit 2; }
@@ -56,11 +57,15 @@ invariants() { # name -> 0 ok, 1 harness violation, 2 provider flake (retry)
   local v rc
   v=$(chk invariants "$WORK/$1.trace"); rc=$?
   if [ $rc -ne 0 ]; then
-    # A run that died on a provider error (exit 1, or killed by the timeout) has
-    # no final/halt event by design: that is an environment flake, not a harness bug.
-    if [ "$v" = "VIOLATION: run ended without agent.final or agent.halt" ] && { [ "${RC:-0}" -eq 1 ] || [ "${RC:-0}" -eq 124 ]; }; then
-      log "      provider flake in $1 (exit $RC): $(tail -n 2 "$WORK/$1.err" | tr '\n' ' ')"
-      return 2
+    # A run killed by the timeout (124) or dead on a provider error (1) is cut off
+    # mid-flight: re-check with only what a cut-off trace may leave open. If that
+    # passes it is an environment flake (retry); if not, it is a real violation.
+    if [ "${RC:-0}" -eq 1 ] || [ "${RC:-0}" -eq 124 ]; then
+      if chk invariants --partial "$WORK/$1.trace" >/dev/null; then
+        log "      cut-off run in $1 (exit $RC, timeout or provider error): $(tail -n 2 "$WORK/$1.err" | tr '\n' ' ')"
+        return 2
+      fi
+      v=$(chk invariants --partial "$WORK/$1.trace")
     fi
     log "      invariant violation in $1: $v"
     return 1
@@ -117,22 +122,26 @@ c_shell_and_files() {
   grep -q '42' "$WORK/sf-$2.err" || return 2
   return 0
 }
-# Answer the first approval.request in NAME.trace over fifo fd 7 (PID = harness).
+# Answer EVERY approval.request in NAME.trace over fifo fd 7 until the harness (PID)
+# exits: a model may retry a denied or approved command and raise a second ASK.
 responder() { # name answer
-  local name=$1 answer=$2 aid="" t=0
-  while [ -z "$aid" ] && [ $t -lt $((TMO * 5)) ]; do
-    aid=$(grep -m1 '"approval.request"' "$WORK/$name.trace" 2>/dev/null | grep -oE '"action":"[^"]+"' | head -1 | cut -d'"' -f4)
-    kill -0 "$PID" 2>/dev/null || break
-    sleep 0.2; t=$((t+1))
+  local name=$1 answer=$2 aid
+  declare -A done_ids=()
+  while kill -0 "$PID" 2>/dev/null; do
+    while read -r aid; do
+      [ -n "$aid" ] && [ -z "${done_ids[$aid]:-}" ] || continue
+      done_ids[$aid]=1
+      echo "{\"action\":\"$aid\",\"answer\":\"$answer\"}" >&7
+    done < <(grep '"approval.request"' "$WORK/$name.trace" 2>/dev/null | grep -oE '"action":"[^"]+"' | cut -d'"' -f4)
+    sleep 0.2
   done
-  [ -n "$aid" ] && echo "{\"action\":\"$aid\",\"answer\":\"$answer\"}" >&7
 }
 ask_run() { # name model answer-or-"" [extra flags...]
   local name=$1 model=$2 answer=$3; shift 3
   rm -f "$WORK/$name.fifo"
   mkfifo "$WORK/$name.fifo"
   timeout "$TMO" "$BIN" run --provider:ollama --model:"$model" --base-url:"$OLLAMA" --json --theme:plain \
-    --allow-shell --approvals:stdin "$@" \
+    --allow-shell --approvals:stdin --approval-timeout:60 "$@" \
     "Run exactly this shell command and nothing else: touch asked.marker; chmod -R 777 ." \
     < "$WORK/$name.fifo" > "$WORK/$name.trace" 2> "$WORK/$name.err" &
   PID=$!
@@ -203,18 +212,33 @@ c_mandate() {
   return 0
 }
 
-ALL_CHECKS="files shell_and_files ask_deny ask_once ask_timeout resume memory mandate"
+c_compaction() {
+  fresh "cmp-$2"
+  run "cmp1-$2" "$1" "Write a 20 line poem about the sea. Also remember my favourite number is 4417."
+  invariants "cmp1-$2" || return $?
+  run "cmp2-$2" "$1" "What was my favourite number? Answer with the number only." --resume:last --compress
+  invariants "cmp2-$2" || return $?
+  chk has "$WORK/cmp2-$2.trace" context.compacted || return 2
+  local arch; arch=$(ls "$MALYUTKA_STATE_DIR"/sessions/*.archive.jsonl 2>/dev/null | head -1)
+  [ -n "$arch" ] && [ "$(stat -c %a "$arch")" = 600 ] || return 1
+  "$BIN" sessions --show:last | grep -q 'compacted summary of earlier turns' || return 1
+  grep -q '4417' "$WORK/cmp2-$2.err" || return 2
+  return 0
+}
+
+ALL_CHECKS="files shell_and_files ask_deny ask_once ask_timeout resume memory mandate compaction"
+CHECKS=${M2_CHECKS:-$ALL_CHECKS}
 for m in $MODELS; do
   log ""; log "== model $m"
   if ! curl -fsS "$OLLAMA/api/tags" | python3 -c 'import json,sys; n=sys.argv[1]; sys.exit(0 if any(x["name"]==n for x in json.load(sys.stdin)["models"]) else 1)' "$m"; then
     log "  SKIP  [$m] model not installed"; skips=$((skips+1)); continue
   fi
-  for c in $ALL_CHECKS; do attempt "$m" "$c" "c_$c"; done
+  for c in $CHECKS; do attempt "$m" "$c" "c_$c"; done
 done
 
 log ""
 never=""
-for c in $ALL_CHECKS; do
+for c in $CHECKS; do
   if [ -n "${seen_check[$c]:-}" ] && [ -z "${passed_anywhere[$c]:-}" ]; then never="$never $c"; fi
 done
 log "summary: FAIL=$fails SKIP=$skips"
