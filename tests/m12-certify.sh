@@ -157,7 +157,7 @@ else
     # Name the failure even when no unittest case reported [FAILED] (e.g. a
     # crash or compile error): one intermittent failure of exactly that shape
     # was seen once during self-testing and could not be reproduced.
-    fail "nimble test: $(grep -c '\[FAILED\]' "$WORK/test.log") case(s) failed; first error: $({ grep -m1 -E '\[FAILED\]|\.nim\([0-9]+, ?[0-9]+\).*Error:|Unhandled exception|Exception message|SIG[A-Z]+' "$WORK/test.log" || tail -1 "$WORK/test.log"; } | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-200)"
+    fail "nimble test: $(grep -c '\[FAILED\]' "$WORK/test.log") case(s) failed; first error: $({ grep -m1 '\[FAILED\]' "$WORK/test.log" || grep -m1 -E '\.nim\([0-9]+, ?[0-9]+\).*Error:|Unhandled exception|Exception message' "$WORK/test.log" || tail -1 "$WORK/test.log"; } | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-200)"
   fi
   if tests/integration.sh "$BIN" >"$WORK/int.log" 2>&1; then pass "integration: $(tail -1 "$WORK/int.log")"
   else fail "integration: $(tail -1 "$WORK/int.log")"; fi
