@@ -22,7 +22,7 @@ Skins (15): `default` (Hermes gold), `warsaw`, `nato`, `mono`, `ares`, `poseidon
 Keys: Enter send · Alt+Enter / Ctrl+J / trailing `\` newline · Tab complete ·
 Up/Down history · PgUp/PgDn scroll · Ctrl+C clear → stop run → (twice) quit · Ctrl+D quit.
 
-Commands: `/help /new /clear /undo /retry /sessions /resume /memory /personality /tools /model /models /provider /baseurl /shell /skin /verbose
+Commands: `/help /new /clear /undo /retry /sessions /resume /memory /personality /tools /websetup /model /models /provider /baseurl /shell /skin /verbose
 /statusbar /history /journal /doctor /stop /quit`.
 
 **Multi-turn:** each prompt is a new `malyutka run`, resumed from the previous one with `--resume:<run id>`
@@ -33,3 +33,9 @@ The TUI never writes session files; undo is just "resume the earlier run again".
 **Approvals:** runs use `--approvals:stdin`. An ASK opens a modal (once / session / always / deny, with the
 harness's countdown; unanswered = deny). **Tools:** `--allow-files`, `--allow-memory`, `--allow-shell`
 (toggle in-app with `/tools files|shell|memory`); patches show a red/green diff, `todo` shows a checklist.
+
+## Web search
+
+Web tools (`web_fetch`, `web_search`) are on by default; `--no-web` or `/tools web` turns them off. Every web call still
+asks. Search needs a backend: with no `web.json` the default is a local SearXNG at `127.0.0.1:18888`. If nothing answers
+there the TUI says so at startup; type `/websetup` to start one in docker (no account, no key, loopback only).
