@@ -580,7 +580,7 @@ suite "HTML to text":
 
 # ---- harness side: config, tool, policy, helper, helper sandbox ---------------------------------------------
 import std/[asyncdispatch, posix, tables]
-import malyutka/[web, policy, tools, core, provider, events, journal, approval, sandbox]
+import malyutka/[web, policy, tools, core, provider, events, journal, approval, sandbox, websetup]
 
 let helperBin = getCurrentDir() / "malyutka_web"
 let haveHelper = fileExists(helperBin) and bwrapPath().len > 0 and probeBwrap().ok
@@ -680,7 +680,29 @@ suite "web search: configuration":
     check applyWebConfig(c4).len > 0 and not c4.allowWeb and c4.webSearch.backend == ""         # no silent substitute
     writeFile(st / "web.json", """{"fetch": {}}""")
     var c5 = baseConfig(); c5.stateDir = st; c5.allowWeb = true
-    check applyWebConfig(c5).len == 0 and c5.allowWeb and c5.webSearch.backend == ""
+    check applyWebConfig(c5).len == 0 and c5.allowWeb
+    # no search section at all: the keyless default is the local SearXNG from `web-setup`, and it asks
+    check c5.webSearch.backend == "searxng" and c5.webSearch.url == defaultSearxUrl() and not c5.webSearch.trustAllow
+    check not searchExempt(c5)
+    writeFile(st / "web.json", """{"search": {}}""")        # a search section without a backend means "none": no implicit default
+    var c6 = baseConfig(); c6.stateDir = st; c6.allowWeb = true
+    check applyWebConfig(c6).len == 0 and c6.webSearch.backend == ""
+    var c7 = baseConfig(); c7.stateDir = st; c7.allowWeb = true; c7.webBackend = "brave"
+    check applyWebConfig(c7).len > 0 and c7.webSearch.backend == ""                  # an explicit choice is never replaced by the default
+    writeFile(st / "web.json", "{{{")
+    var c8 = baseConfig(); c8.stateDir = st; c8.allowWeb = true
+    check applyWebConfig(c8).len > 0 and c8.webSearch.backend == "" and not c8.allowWeb   # a broken file is never papered over
+
+suite "web-setup (the pure parts)":
+  test "the SearXNG settings enable json, switch the limiter off and keep the secret":
+    let t = searxSettings("abc123")
+    check "use_default_settings: true" in t and "- json" in t and "limiter: false" in t and "secret_key: \"abc123\"" in t
+
+  test "the web.json it writes is accepted by the strict parser, on loopback, with the chosen trust":
+    for (trust, want) in [(true, true), (false, false)]:
+      let r = parseWebConfig(webJsonFor(defaultSearxUrl(1234), trust))
+      check r.problems.len == 0 and not r.cfg.disabled and r.cfg.backendName == "searxng"
+      check r.cfg.sections["searxng"].url == "http://127.0.0.1:1234" and r.cfg.sections["searxng"].trustAllow == want
 
 suite "web search: policy":
   let scap = Capability(name: "web_search", realm: erNetwork, maxEffect: b3External)

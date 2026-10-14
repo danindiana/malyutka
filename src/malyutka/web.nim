@@ -151,6 +151,10 @@ proc applyWebConfig*(cfg: var AgentConfig): seq[string] =
   if cfg.webBackend.len > 0 and cfg.webBackend notin SearchBackends:
     problems.add "--web-backend must be one of searxng, brave, tavily"
     w.disabled = true
+  elif want.len == 0 and not w.searchDefined and not w.disabled:
+    # no search section at all: the keyless default is the local SearXNG that `malyutka web-setup` starts.
+    # It is not trusted by default: every search asks until the operator writes trust:allow.
+    cfg.webSearch = WebSearchCfg(backend: "searxng", url: "http://127.0.0.1:18888")
   elif want.len > 0:
     if w.sections.hasKey(want): cfg.webSearch = w.sections[want]
     else:
@@ -340,6 +344,8 @@ proc runWebSearch*(state: WebState; args: JsonNode; cfg: AgentConfig): ToolResul
     if not res["ok"].getBool:
       var msg = res{"error"}.getStr("unknown error")
       if key.len > 0: msg = msg.replace(key, "[key]")
+      if sc.backend == "searxng" and sc.url == "http://127.0.0.1:18888" and "connect to" in msg:
+        msg.add " (nothing is listening on the default local SearXNG; run `malyutka web-setup` to start one)"
       return searchRefused(msg)
     if state.order.len >= MemoEntries:
       state.memo.del(state.order[0])
