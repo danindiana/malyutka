@@ -3,10 +3,10 @@
 ## sandbox broker decides where. No path executes a call that was not ALLOWed.
 
 import std/[asyncdispatch, json, os, strutils, sysrand, tables, times]
-import ./[types, provider, tools, policy, events, sandbox, journal, approval, memory, latch]
+import ./[types, provider, tools, policy, events, sandbox, journal, approval, memory, latch, compact]
 
 type
-  HaltReason* = enum hrFinal, hrMaxSteps, hrRepetition
+  HaltReason* = enum hrFinal, hrMaxSteps, hrRepetition, hrContext
   RunResult* = object
     runId*: string
     answer*: string
@@ -15,6 +15,7 @@ type
 
   SandboxProbe* = proc(): tuple[ok: bool, detail: string] {.closure.}
   Checkpoint* = proc(messages: seq[Message]; status: string) {.closure.}
+  ArchiveProc* = proc(dropped: seq[Message]) {.closure.}
 
 proc msg(role: Role; content: string): Message =
   Message(role: role, content: content, createdAt: now())
@@ -62,7 +63,8 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
                approver: Approver = nil;
                latch: LatchStore = nil;
                history: seq[Message] = @[];
-               checkpoint: Checkpoint = nil): Future[RunResult] {.async.} =
+               checkpoint: Checkpoint = nil;
+               archive: ArchiveProc = nil): Future[RunResult] {.async.} =
   let em = newEmitter(runId, sink)
   result.runId = runId
   var names = newJArray()
@@ -152,6 +154,48 @@ proc runAgent*(p: Provider; task: string; cfg: AgentConfig;
 
   for step in 0 ..< cfg.maxSteps:
     discard em.emit("step.start", %*{"step": step})
+    if cfg.contextWindow > 0:
+      # Invariant 10: compaction is observable (event + archive written BEFORE the
+      # messages leave the prompt) and never silent. Every failure continues
+      # uncompacted; only an overflow of the whole window halts.
+      let forced = cfg.compressNow and step == 0
+      let before = estimateTokens(result.messages)
+      let pl = plan(result.messages, cfg.contextWindow, forced)
+      if pl.ok:
+        var failure = ""
+        var summary = ""
+        try: summary = await summarize(p, pl.p.dropped)
+        except CatchableError as e: failure = "summariser: " & e.msg
+        if failure.len == 0 and summary.strip.len == 0: failure = "empty summary"
+        var candidate: seq[Message]
+        if failure.len == 0:
+          candidate = apply(result.messages, pl.p, summary)
+          if validateTranscript(candidate).len > 0: failure = "invalid transcript after compaction"
+          elif estimateTokens(candidate) >= before: failure = "no progress"
+        if failure.len == 0:
+          try:
+            if archive == nil: raise newException(IOError, "no archive attached")
+            archive(pl.p.dropped)
+          except CatchableError as e: failure = "archive: " & e.msg
+        if failure.len == 0:
+          result.messages = candidate
+          discard em.emit("context.compacted", %*{"dropped": pl.p.dropped.len,
+            "kept": candidate.len, "tokensBefore": before,
+            "tokensAfter": estimateTokens(candidate), "archived": true})
+          save("running")
+        else:
+          discard em.emit("context.compaction_failed", %*{"reason": failure})
+      elif forced:
+        discard em.emit("context.compaction_failed", %*{"reason": pl.why})
+      if estimateTokens(result.messages) > cfg.contextWindow:
+        let why = "estimated " & $estimateTokens(result.messages) & " tokens exceed the " &
+          $cfg.contextWindow & "-token context window and compaction could not help"
+        discard em.emit("agent.halt", %*{"reason": "context", "detail": why})
+        result.answer = "Halted: " & why
+        result.halt = hrContext
+        result.messages.add msg(rAssistant, result.answer)
+        save("halted")
+        return
     let action = await p.next(result.messages, schemas)
     if action.kind == makFinal:
       result.messages.add msg(rAssistant, action.text)

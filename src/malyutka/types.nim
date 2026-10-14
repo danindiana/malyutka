@@ -80,6 +80,8 @@ type
     soul*: string               ## operator text prepended to the system prompt
     personality*: string
     memoryText*: string         ## snapshot of memory.md taken at run start
+    contextWindow*: int         ## tokens; 0 = compaction off (SPEC-006)
+    compressNow*: bool          ## compact the loaded history before the first call
     approvals*: ApprovalMode
     approvalTimeoutSec*: int    ## unanswered ASK becomes DENY after this long
     unconfinedHost*: bool       ## explicit waiver: shell may run unsandboxed

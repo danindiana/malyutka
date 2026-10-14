@@ -17,8 +17,8 @@ behind a gate and with an invariant row. That is why the list below is ordered b
 | P1 | `todo` planning tool | none | S | SPEC-001 |
 | P1 | Persistent memory file, `SOUL.md`, personalities | none | S | [SPEC-004](../spec/SPEC-004-memory-personality.md) |
 | P1 | Slash-command parity in the TUI | partial | S | SPEC-003/004 |
-| P2 | Session search (SQLite FTS5) | none | M | [todo](../todo/P2-session-search-fts.md) |
-| P2 | Context compression (`/compress`, auto) | none (I10 partial) | M | [todo](../todo/P2-context-compression.md) |
+| P2 | Session search (SQLite FTS5) | **ranked search with a derived index (0.6.0)**; SQLite deliberately not used | M | [SPEC-007](../spec/SPEC-007-session-search.md) |
+| P2 | Context compression (`/compress`, auto) | **done (0.6.0), I10 enforced** | M | [SPEC-006](../spec/SPEC-006-context-compaction.md) |
 | P2 | Skills (agentskills.io `SKILL.md`) | none | M | [todo](../todo/P2-skills.md) |
 | P2 | MCP client (stdio) | none | M | [todo](../todo/P2-mcp-client.md) |
 | P2 | Background `process` tool | none | M | [todo](../todo/P2-background-process.md) |

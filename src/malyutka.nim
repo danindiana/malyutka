@@ -1,7 +1,7 @@
 import std/[asyncdispatch, json, os, parseopt, strutils, tables]
 import malyutka/[types, provider, core, session, events, config, sandbox, journal, approval, memory, latch, tools]
 
-const Version = "0.5.0"
+const Version = "0.6.0"
 
 proc usage() =
   echo """malyutka // 9M14 - Linux-native Nim agent harness (v""" & Version & """)
@@ -11,7 +11,7 @@ Usage:
   malyutka doctor
   malyutka sessions [--json]           List saved sessions (newest first)
   malyutka sessions --show:ID          Print a session transcript
-  malyutka sessions --search:TEXT      Case-insensitive substring search over transcripts
+  malyutka sessions --search:TEXT      Ranked search over transcripts (--limit:N, --json)
   malyutka journal                     Journal health + actions with unknown outcome
   malyutka journal --reconcile:ID --as:completed|failed|not-executed
                                        Record the outcome you established for an action
@@ -37,6 +37,8 @@ Options:
   --resume:ID|last           Continue a saved session with this task as the next user turn
                              (never re-executes anything; see spec/SPEC-003)
   --resume-despite-unknown   Resume even if the session has unresolved UNKNOWN_OUTCOME actions
+  --context-window:N         Model context size in tokens; compaction starts at 75% (default 32768, 0 = off)
+  --compress                 Compact the loaded history before the first call (with --resume)
   --allow-memory             Enable the `memory` tool and inject memory.md into the prompt
   --soul:PATH                Operator persona file (default <state>/SOUL.md if present)
   --personality:NAME         concise|teacher|kawaii|terse-ops
@@ -244,12 +246,14 @@ proc journalCmd() =
 proc sessionsCmd() =
   var asJson = false
   var show, search = ""
+  var limit = 10
   for kind, key, val in getopt(commandLineParams()[1 .. ^1]):
     if kind == cmdLongOption:
       case key
       of "json": asJson = true
       of "show": show = val
       of "search": search = val
+      of "limit": limit = parseInt(val)
       else: stderr.writeLine("error: unknown option --" & key); quit(2)
   let dir = stateDir() / "sessions"
   try:
@@ -262,9 +266,15 @@ proc sessionsCmd() =
         for c in m.toolCalls: echo "    -> ", c.name, " ", $c.args
       quit(0)
     if search.len > 0:
-      let hits = searchSessions(dir, search)
-      for h in hits: echo h.runId, "  [", h.role, "]  ", h.snippet
-      if hits.len == 0: echo "no matches"
+      let hits = rankedSearch(dir, search, limit)
+      if asJson:
+        var arr = newJArray()
+        for h in hits:
+          arr.add %*{"run": h.runId, "score": h.score, "title": h.title, "role": h.role, "snippet": h.snippet}
+        echo $arr
+      else:
+        for h in hits: echo h.runId, "  score=", h.score, "  [", h.role, "]  ", h.snippet
+        if hits.len == 0: echo "no matches"
       quit(0)
     let all = listSessions(dir)
     if asJson:
@@ -330,6 +340,8 @@ proc main() =
         of "allow-shell": cfg.allowShell = true
         of "allow-files": cfg.allowFiles = true
         of "allow-memory": cfg.allowMemory = true
+        of "context-window": cfg.contextWindow = parseInt(val)
+        of "compress": cfg.compressNow = true
         of "resume": resumeSpec = val
         of "resume-despite-unknown": resumeDespite = true
         of "soul": soulFlag = val
@@ -433,9 +445,11 @@ proc main() =
     if cfg.mandates:
       store = newLatchStore(mandatePath())
       registry["propose_mandate"] = proposeMandateSpec(store, runId)
+    let archive: ArchiveProc = proc(dropped: seq[Message]) =
+      appendArchive(sessDir / (runId & ".archive.jsonl"), runId, dropped)
     let res = waitFor runAgent(makeProvider(cfg), task, cfg, registry = registry, sink = sink,
                                runId = runId, journal = j, approver = approver, latch = store,
-                               history = history, checkpoint = checkpoint)
+                               history = history, checkpoint = checkpoint, archive = archive)
     if cfg.jsonEvents: stderr.writeLine("FINAL: " & res.answer)
     else: stderr.writeLine("\n" & res.answer)
     if res.halt != hrFinal: quit(4)

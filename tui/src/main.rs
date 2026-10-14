@@ -27,6 +27,7 @@ USAGE: malyutka-tui [OPTIONS]
   --allow-files           allow read_file/search_files/write_file/patch/todo (workspace only)
   --allow-memory          enable the memory tool and inject memory.md
   --personality <name>    concise | teacher | kawaii | terse-ops
+  --context-window <n>    model context size in tokens (compaction starts at 75%)
   -h, --help";
 
 fn parse_args() -> Result<(Config, String), String> {
@@ -39,6 +40,8 @@ fn parse_args() -> Result<(Config, String), String> {
         allow_files: false,
         allow_memory: false,
         personality: String::new(),
+        context_window: None,
+        compress_next: false,
         verbose: false,
         statusbar: true,
     };
@@ -60,6 +63,13 @@ fn parse_args() -> Result<(Config, String), String> {
             "--allow-files" => cfg.allow_files = true,
             "--allow-memory" => cfg.allow_memory = true,
             "--personality" => cfg.personality = val("--personality")?,
+            "--context-window" => {
+                cfg.context_window = Some(
+                    val("--context-window")?
+                        .parse()
+                        .map_err(|_| "--context-window needs a number".to_string())?,
+                )
+            }
             "--ollama" => {
                 cfg.provider = "ollama".into();
                 cfg.base_url = ollama::default_base();
@@ -108,6 +118,7 @@ fn state_dir() -> std::path::PathBuf {
 
 fn start_run(app: &mut App, task: String, tx: &Sender<Msg>) {
     let args = app.run_args(&task);
+    app.cfg.compress_next = false;
     let item_start = app.items.len().saturating_sub(1); // the user item was just pushed
     app.reset_run_state();
     app.cur_prompt = Some((task, item_start));
@@ -169,6 +180,31 @@ fn run_command(app: &mut App, line: &str, tx: &Sender<Msg>) {
         "/resume" => {
             app.session = Some(arg.to_string());
             app.note(format!("next prompt resumes session {arg}"));
+        }
+        "/compress" => {
+            if app.session.is_none() {
+                app.note("nothing to compress: no active session yet");
+            } else {
+                app.cfg.compress_next = true;
+                app.note("the next prompt compacts the conversation first (summary + archive)");
+            }
+        }
+        "/ctx" => match arg.parse::<u64>() {
+            Ok(n) => {
+                app.cfg.context_window = Some(n);
+                app.note(format!(
+                    "context window = {n} tokens (0 disables compaction)"
+                ));
+            }
+            Err(_) => app.note(match app.cfg.context_window {
+                Some(n) => format!("context window = {n} tokens; set with /ctx <n>"),
+                None => "context window = harness default (32768); set with /ctx <n>".to_string(),
+            }),
+        },
+        "/search" if arg.is_empty() => app.note("usage: /search <text>"),
+        "/search" => {
+            let o = runner::capture(&app.cfg.bin, &["sessions", &format!("--search:{arg}")]);
+            app.note(o.trim_end().to_string());
         }
         "/mandates" => {
             let o = runner::capture(&app.cfg.bin, &["mandate"]);
@@ -377,6 +413,16 @@ fn pick_key(app: &mut App, k: KeyEvent) {
                 app.cfg.base_url = base.clone();
                 app.cfg.model = name.clone();
                 app.note(format!("model = {name} (ollama @ {base})"));
+                match ollama::num_ctx(&base, &name) {
+                    Some(n) => {
+                        app.cfg.context_window = Some(n);
+                        app.note(format!("context window = {n} tokens (the model's num_ctx)"));
+                    }
+                    None => app.note(
+                        "context window unknown: using the harness default (32768). If your Ollama runs a \
+                         smaller num_ctx it will truncate silently; set /ctx <n> to match.",
+                    ),
+                }
             }
         }
         _ => {}

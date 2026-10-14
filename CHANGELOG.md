@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.6.0 context compaction and ranked session search (M5-lite)
+
+- **Compaction** (`--context-window:N`, default 32768; `--compress`): above 75 % of the
+  window the oldest turns are summarised by the same provider and replaced by one
+  labelled-untrusted `user` message, down to about 50 %. The transcript is split only at
+  cut points that keep the tool protocol valid. Dropped messages are appended to
+  `sessions/<run>.archive.jsonl` (0600) **before** they leave the prompt; no archive, no
+  compaction. Failures (summariser error, empty summary, no progress, no cut point)
+  are reported as `context.compaction_failed` and the run continues; if the estimate still
+  exceeds the window the run halts (`reason=context`, exit 4) instead of truncating.
+  Invariant **I10 is now enforced**. Events: `context.compacted`, `context.compaction_failed`.
+- **Ranked search**: `sessions --search` scores sessions (capped counts, newer wins ties),
+  `--limit`, `--json`, via a derived cache `sessions/.index.json` (0600) that is trusted only
+  per entry while mtime (ns) and size match. No SQLite (see SPEC-007).
+- TUI: `/compress`, `/ctx`, `/search`, context window from Ollama `/api/show` (`num_ctx`)
+  with a warning when it is unknown, compaction events in the transcript.
+- Tests: `tests/test_compact.nim` (26 tests; mutants verified: cut between a call and its reply,
+  archive skipped / not required, silent loss on summariser failure, no halt at 100 %, unlabelled
+  summary, no-progress guard, threshold ignored; ranking, stale-entry, symlink and poisoned-index
+  mutants). Two documented equivalent mutants (SPEC-007) and one defence-in-depth guard (SPEC-006).
+  Integration 13 with the scripted fake model; checked by hand with qwen3.5:9b.
+
 ## Unreleased: live validation (no kernel change)
 
 - `tests/m2-live.sh` + `tests/m2_live_check.py`: drives the real harness with real

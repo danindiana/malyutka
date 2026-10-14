@@ -32,6 +32,8 @@ pub struct Config {
     pub allow_files: bool,
     pub allow_memory: bool,
     pub personality: String,
+    pub context_window: Option<u64>,
+    pub compress_next: bool,
     pub verbose: bool,
     pub statusbar: bool,
 }
@@ -165,8 +167,14 @@ impl App {
                 args.push(flag.to_string());
             }
         }
+        if let Some(n) = self.cfg.context_window {
+            args.push(format!("--context-window:{n}"));
+        }
         if let Some(id) = &self.session {
             args.push(format!("--resume:{id}"));
+            if self.cfg.compress_next {
+                args.push("--compress".to_string());
+            }
         }
         // A leading '-' would be parsed as an option by the harness.
         args.push(if task.starts_with('-') {
@@ -395,6 +403,19 @@ impl App {
                     _ => self.items.push(Item::Todo(list)),
                 }
             }
+            "context.compacted" => {
+                let n = |k: &str| e.payload.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+                self.items.push(Item::Note(format!(
+                    "context compacted: {} messages summarised and archived ({} → {} tokens)",
+                    n("dropped"),
+                    n("tokensBefore"),
+                    n("tokensAfter")
+                )));
+            }
+            "context.compaction_failed" => self.items.push(Item::Warn(format!(
+                "context not compacted: {}",
+                e.s("reason")
+            ))),
             "mandate.used" => self.items.push(Item::Note(format!(
                 "mandate {} used ({}/{})",
                 e.s("mandate"),
@@ -606,6 +627,8 @@ mod tests {
                 allow_files: false,
                 allow_memory: false,
                 personality: String::new(),
+                context_window: None,
+                compress_next: false,
                 verbose: false,
                 statusbar: true,
             },
@@ -704,6 +727,8 @@ mod picker_tests {
                 allow_files: false,
                 allow_memory: false,
                 personality: String::new(),
+                context_window: None,
+                compress_next: false,
                 verbose: false,
                 statusbar: true,
             },
@@ -878,5 +903,40 @@ mod picker_tests {
             serde_json::json!({"tool":"shell","streak":2}),
         ));
         assert_eq!(a.items.len(), 5);
+    }
+
+    #[test]
+    fn compress_and_context_window_reach_the_command_line() {
+        let mut a = app();
+        assert!(!a
+            .run_args("x")
+            .iter()
+            .any(|x| x.starts_with("--context-window")));
+        a.cfg.context_window = Some(8192);
+        a.cfg.compress_next = true;
+        // --compress only makes sense with a session to compact
+        assert!(!a.run_args("x").contains(&"--compress".to_string()));
+        a.session = Some("R1".into());
+        let args = a.run_args("x");
+        assert!(args.contains(&"--context-window:8192".to_string()));
+        assert!(args.contains(&"--compress".to_string()));
+        assert!(args.contains(&"--resume:R1".to_string()));
+    }
+
+    #[test]
+    fn compaction_events_are_visible() {
+        let mut a = app();
+        a.on_event(ev(
+            "context.compacted",
+            serde_json::json!({"dropped":12,"tokensBefore":9000,"tokensAfter":3000}),
+        ));
+        a.on_event(ev(
+            "context.compaction_failed",
+            serde_json::json!({"reason":"no progress"}),
+        ));
+        assert!(
+            matches!(&a.items[0], Item::Note(t) if t.contains("12 messages") && t.contains("9000 → 3000"))
+        );
+        assert!(matches!(&a.items[1], Item::Warn(t) if t.contains("no progress")));
     }
 }

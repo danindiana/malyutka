@@ -305,5 +305,41 @@ chmod 666 "$MALYUTKA_STATE_DIR/SOUL.md"
 "$BIN" run --provider:mock x 2>&1 >/dev/null | grep -q 'SOUL ignored' && ok "group/world-writable SOUL.md is ignored with a warning" || bad "unsafe SOUL accepted"
 rm -f "$MALYUTKA_STATE_DIR/SOUL.md"
 
+# 13. Context compaction and ranked search through the real CLI.
+mkdir -p "$WORK/m5" && cd "$WORK/m5" || exit 2
+P5=$((P4 + 30))
+export MALYUTKA_STATE_DIR="$WORK/m5state"
+python3 -c 'import json; print(json.dumps([{"final": "first answer about zebra stripes " + "padding words " * 300}]))' > "$WORK/m5a.json"
+python3 -I "$HERE/fake_script.py" "$P5" "$WORK/m5a.json" >/dev/null 2>&1 & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$P5 --json 'tell me about zebra stripes please' >/dev/null 2>&1
+sid5=$("$BIN" sessions --json | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["run"])')
+python3 -I "$HERE/fake_script.py" $((P5 + 1)) <(echo '[{"final":"SUMMARY: user asked about zebra stripes"},{"final":"after compaction"}]') "$WORK/m5.req" >/dev/null 2>&1 & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P5 + 1)) --json \
+  --resume:"$sid5" --compress 'and now something else' > "$WORK/m5.trace" 2> "$WORK/m5.err"; rc=$?
+newrun=$("$BIN" sessions --json | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["run"])')
+arch="$MALYUTKA_STATE_DIR/sessions/$newrun.archive.jsonl"
+if [ $rc -eq 0 ] && grep -q '"context.compacted"' "$WORK/m5.trace" && grep -q 'after compaction' "$WORK/m5.err"; then
+  ok "--compress: history summarised, run answered with the compacted context"
+else bad "compress run (exit $rc): $(cat "$WORK/m5.err")"; fi
+[ -f "$arch" ] && [ "$(stat -c %a "$arch")" = 600 ] && grep -q 'zebra stripes' "$arch" \
+  && ok "dropped messages archived first (0600, JSONL) in sessions/<run>.archive.jsonl" || bad "archive missing or wrong mode"
+"$BIN" sessions --show:"$newrun" | grep -q 'compacted summary of earlier turns' \
+  && ok "saved session carries the labelled summary, not the dropped turns" || bad "summary not in session"
+python3 - "$WORK/m5.req" <<'PY' && ok "summariser got the fixed prompt; the real call saw the summary" || bad "request shapes"
+import json, sys
+reqs = [json.loads(l) for l in open(sys.argv[1])]
+assert reqs[0]["messages"][0]["content"].startswith("You compress"), reqs[0]["messages"][0]
+assert "tools" not in reqs[0], "summariser must not be offered tools"
+assert any("compacted summary" in m["content"] for m in reqs[1]["messages"] if m["role"] == "user")
+PY
+"$BIN" sessions --search:'zebra stripes' | grep -q "$sid5" && "$BIN" sessions --search:'zebra' --json | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d and d[0]["score"]>0 else 1)' \
+  && ok "ranked search (text and --json) finds the session" || bad "ranked search"
+[ -f "$MALYUTKA_STATE_DIR/sessions/.index.json" ] && [ "$(stat -c %a "$MALYUTKA_STATE_DIR/sessions/.index.json")" = 600 ] \
+  && ok "search index cache is 0600" || bad "search index mode"
+"$BIN" run --provider:mock --compress 'x' >/dev/null 2>&1; rc=$?
+[ $rc -eq 0 ] && ok "--compress with nothing to compact is harmless (reported, not fatal)" || bad "compress on fresh run exit $rc"
+unset MALYUTKA_STATE_DIR
+export MALYUTKA_STATE_DIR="$WORK/state"
+
 echo "integration: $pass passed, $fail failed"
 [ $fail -eq 0 ]

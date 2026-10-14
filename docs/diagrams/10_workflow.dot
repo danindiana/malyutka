@@ -7,6 +7,7 @@ digraph workflow {
     start [label="malyutka run [--resume:ID] <task>", shape=oval, color="#58a6ff", fillcolor="#13294d"];
     probe [label="Preflight\nworkspace guard · state dir disjoint\nbwrap probe (exit 3 on failure)\njournal open + unknown-outcome report", color="#f0883e"];
     resume [label="Load session\nvalidateTranscript · fresh system prompt\nrefuse if lineage has unknown outcomes\n(history is inert: I15)", color="#d29922"];
+    compact [label="Compaction check (every step)\n> 75% of window: summarise oldest turns\narchive FIRST, then swap (I10)\n> 100% still: halt, never truncate", color="#39c5cf", fillcolor="#0d2e2e"];
     ask_model [label="Provider call\nmessages + advertised tools", color="#58a6ff", fillcolor="#13294d"];
     final [label="Plain answer?\n⟶ agent.final · session.saved · exit 0", color="#3fb950"];
     prop [label="tool.proposed\n(call ids normalised)", color="#58a6ff"];
@@ -22,12 +23,13 @@ digraph workflow {
     deny [label="DENIED / CANCELLED\nstill a reply", color="#f85149", fillcolor="#3a1518"];
 
     start -> probe -> resume [color="#d29922", label="--resume"];
-    probe -> ask_model;
-    resume -> ask_model [color="#d29922"];
+    probe -> compact;
+    resume -> compact [color="#d29922"];
+    compact -> ask_model;
     ask_model -> final [label="no tool calls"];
     ask_model -> prop [label="tool calls"];
     prop -> reg -> j1 -> pol -> j2 -> exec -> j3 -> obs;
-    obs -> ask_model [label="next step"];
+    obs -> compact [label="next step"];
     pol -> latch [label="ASK", color="#d29922"];
     latch -> j2 [label="covered", color="#3fb950"];
     latch -> approver [label="not covered", color="#d29922"];

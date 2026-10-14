@@ -57,6 +57,52 @@ fn host_port(base: &str) -> Result<(String, u16), String> {
     }
 }
 
+/// `num_ctx` from the `parameters` text of an `/api/show` response, if the model sets one.
+pub fn parse_num_ctx(body: &str) -> Option<u64> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    let params = v.get("parameters")?.as_str()?;
+    for line in params.lines() {
+        let mut it = line.split_whitespace();
+        if it.next() == Some("num_ctx") {
+            return it.next()?.parse().ok();
+        }
+    }
+    None
+}
+
+fn http(base: &str, req: &str) -> Result<String, String> {
+    let (host, port) = host_port(base)?;
+    let addr = (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|e| e.to_string())?
+        .next()
+        .ok_or("cannot resolve host")?;
+    let mut s =
+        TcpStream::connect_timeout(&addr, Duration::from_secs(2)).map_err(|e| e.to_string())?;
+    s.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    s.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+    let mut raw = String::new();
+    s.read_to_string(&mut raw).map_err(|e| e.to_string())?;
+    let (head, body) = raw
+        .split_once("\r\n\r\n")
+        .ok_or("malformed HTTP response")?;
+    if !head.contains(" 200") {
+        return Err(head.lines().next().unwrap_or("").to_string());
+    }
+    Ok(body.to_string())
+}
+
+/// The model's configured `num_ctx`, when its Modelfile sets one.
+pub fn num_ctx(base: &str, model: &str) -> Option<u64> {
+    let (host, _) = host_port(base).ok()?;
+    let payload = serde_json::json!({ "name": model }).to_string();
+    let req = format!(
+        "POST /api/show HTTP/1.0\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{payload}",
+        payload.len()
+    );
+    parse_num_ctx(&http(base, &req).ok()?)
+}
+
 pub fn list_models(base: &str) -> Result<Vec<Model>, String> {
     let (host, port) = host_port(base)?;
     let addr = (host.as_str(), port)
@@ -109,6 +155,16 @@ mod tests {
     fn rejects_garbage() {
         assert!(parse_tags("nope").is_err());
         assert!(parse_tags("{}").is_err());
+    }
+
+    #[test]
+    fn num_ctx_comes_from_the_parameters_text() {
+        let body = r#"{"parameters":"temperature 0.7\nnum_ctx                        131072\nstop \"<|im_end|>\""}"#;
+        assert_eq!(parse_num_ctx(body), Some(131072));
+        assert_eq!(parse_num_ctx(r#"{"parameters":"temperature 1"}"#), None);
+        assert_eq!(parse_num_ctx(r#"{"parameters":"num_ctx lots"}"#), None);
+        assert_eq!(parse_num_ctx("nope"), None);
+        assert_eq!(parse_num_ctx("{}"), None);
     }
 
     #[test]
