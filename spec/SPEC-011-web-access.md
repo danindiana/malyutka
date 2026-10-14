@@ -33,12 +33,23 @@ web tools are **not registered** and `web.unavailable {reason}` is emitted; the 
 | Tool | Args | Effect | Notes |
 |---|---|---|---|
 | `web_fetch` | `url`, `offset?`, `char_limit?` | B3 | text of one page (HTML→text/markdown, plain text, JSON, XML); default 15 000 chars (1 000–60 000); `offset` pages through it |
-| `web_search` | `query`, `limit?` (1–20, default 5) | B3 | the ONE backend selected in `<state>/web.json` (or `--web-backend:NAME`): SearXNG, Brave or Tavily; registered only when a backend is configured |
+| `web_search` | `query`, `limit?` (1–20, default 5) | B3 | the ONE backend selected in `<state>/web.json` (or `--web-backend:NAME`): SearXNG, Brave or Tavily; registered when a backend is configured, or by default against the local SearXNG (below) |
 
 Results are wrapped: `[web_fetch <final url> · <status> · <type> · chars a–b of N · untrusted page text]` then the
 text. Search results are `[web_search <backend> · N results · untrusted search results]` then a numbered list of
 title, URL and snippet (markup stripped, URLs limited to http/https, every field bounded). Our own label strings are
 defanged inside page and result text. An in-run memo returns the same text for a repeated URL/query, flagged `cached`.
+
+### Keyless default: `malyutka web-setup`
+With no `search` section in `web.json` (or no file), the backend is a **local SearXNG at `http://127.0.0.1:18888`** with
+`trust: ask` (every search asks). `malyutka web-setup [--port:N] [--ask]` starts it: a docker container
+(`searxng/searxng:latest`, `--restart unless-stopped`) published on **127.0.0.1 only**, with a generated
+`<state>/searxng/settings.yml` (json format enabled, limiter off, random secret), waits until it answers JSON, and writes
+`<state>/web.json` with `trust: "allow"` (or `ask` with `--ask`) unless a `web.json` already exists, which it never
+overwrites. A `search` section without a backend means "no search"; a missing section for an explicitly selected backend,
+a bad `--web-backend`, or a broken file is an error, never replaced by the default. If nothing listens on the default
+address the tool error says to run `malyutka web-setup`. DuckDuckGo was considered and rejected: it has no API and its HTML
+endpoints answer bots with a challenge page (tested from this host).
 
 ### Search backends
 | Backend | Request | Credential |

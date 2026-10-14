@@ -1,5 +1,5 @@
 import std/[asyncdispatch, json, os, parseopt, strutils, tables]
-import malyutka/[types, provider, core, session, events, config, sandbox, journal, approval, memory, latch, tools, web, policy]
+import malyutka/[types, provider, core, session, events, config, sandbox, journal, approval, memory, latch, tools, web, policy, websetup]
 
 const Version = "0.8.0"
 
@@ -9,6 +9,7 @@ proc usage() =
 Usage:
   malyutka run [options] <task>
   malyutka doctor
+  malyutka web-setup [--port:N] [--ask]  Start a local SearXNG in docker (loopback only, no key) and write web.json
   malyutka sessions [--json]           List saved sessions (newest first)
   malyutka sessions --show:ID          Print a session transcript
   malyutka sessions --search:TEXT      Ranked search over transcripts (--limit:N, --json)
@@ -334,6 +335,18 @@ proc main() =
   if paramCount() == 0: usage(); quit(0)
   let cmd = paramStr(1)
   if cmd == "doctor": doctor(); quit(0)
+  if cmd == "web-setup":
+    var port = DefaultSearxPort
+    var trust = true
+    for i in 2 .. paramCount():
+      let a = paramStr(i)
+      if a == "--ask": trust = false
+      elif a.startsWith("--port:"):
+        try: port = parseInt(a[7 .. ^1])
+        except ValueError: port = 0
+        if port notin 1 .. 65535: stderr.writeLine "bad --port"; quit(2)
+      else: stderr.writeLine "unknown option " & a; quit(2)
+    quit(webSetup(stateDir(), port, trust))
   if cmd == "journal": journalCmd()
   if cmd == "sessions": sessionsCmd()
   if cmd == "mandate": mandateCmd()

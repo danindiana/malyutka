@@ -11,9 +11,10 @@
 - Approvals: every search asks and shows the backend and the exact query. The only unasked search is one against a
   **SearXNG on loopback** with `trust: "allow"`, re-derived from the live config at every decision; the config
   parser rejects `trust: "allow"` for any other host or backend. Credential-shaped queries are DENY (no approver).
+- **Keyless default**: `malyutka web-setup` starts a loopback-only SearXNG in docker with json enabled and writes `web.json`; with no `search` config the default backend is that local instance (asking on every call until `trust: allow` is written). DuckDuckGo was rejected (bot challenge, no API).
 - `malyutka doctor` shows the configured search backend; `web.searched` event.
-- Tests: 33 new (request building, answer cleaning, fake backends over http and https, key handling, config
-  strictness, the exemption table, the helper end to end), 26 mutants. **Brave and Tavily are verified against local
+- Tests: 35 new (request building, answer cleaning, fake backends over http and https, key handling, config
+  strictness, the exemption table, the helper end to end), 30 mutants. **Brave and Tavily are verified against local
   fakes only**; SearXNG was also verified against a real instance.
 
 ## Unreleased: web fetch (SPEC-011, part 1)
