@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased: web search (SPEC-011, part 2)
+## 0.9.0 web access (SPEC-011)
+
+### Search (part 2)
 
 - **`web_search`** (`--web`, needs a backend in `<state>/web.json` or `--web-backend:NAME`): **SearXNG**, **Brave
   Search** and **Tavily**, normalised to title / URL / snippet, labelled `untrusted search results`. One backend,
@@ -19,7 +21,7 @@
   strictness, the exemption table, the helper end to end), 30 mutants. **Brave and Tavily are verified against local
   fakes only**; SearXNG was also verified against a real instance.
 
-## Unreleased: web fetch (SPEC-011, part 1)
+### Fetch (part 1)
 
 - **`web_fetch`** (`--web`): fetch one http/https page and return its text (HTML to markdown-ish text, plain text,
   JSON, XML); paging with `offset`/`char_limit`; in-run memo; result labelled `untrusted page text`.

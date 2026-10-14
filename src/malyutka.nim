@@ -1,7 +1,7 @@
 import std/[asyncdispatch, json, os, parseopt, posix, strutils, tables, terminal]
 import malyutka/[types, provider, core, session, events, config, sandbox, journal, approval, memory, latch, tools, web, policy, websetup]
 
-const Version = "0.8.0"
+const Version = "0.9.0"
 
 proc usage() =
   echo """malyutka // 9M14 - Linux-native Nim agent harness (v""" & Version & """)

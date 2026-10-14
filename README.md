@@ -64,7 +64,7 @@ with its AppArmor restriction active (see the table).
 
 | Evidence | Status |
 |---|---|
-| Offline suites: 333 unit/invariant/adversarial/latch/session/compaction/process/skills/MCP/web + 83 CLI integration | pass on Nim 1.6.14 and 2.2.12 locally (web fetch and search, unreleased); the Nim 1.6.14 matrix runs in CI |
+| Offline suites: 333 unit/invariant/adversarial/latch/session/compaction/process/skills/MCP/web + 83 CLI integration | pass on Nim 1.6.14 and 2.2.12 locally (0.9.0); the Nim 1.6.14 matrix runs in CI |
 | Native Nim 2.x build and tests | pass on CI (Nim 2.2.x, ubuntu-24.04, unprivileged runner) |
 | Nim 2.2.4 semantic check (`nim check`) | 0 diagnostics in Malyutka sources |
 | Live Ollama tool calling on a real host (qwen3.5:27b): single + multi-call, sandboxed shell, model-issued escape attempt, live SIGKILL + restart | **certified**: [record](docs/certification/M1.2-calisota-20261007.md) (Ubuntu 22.04, Nim 2.2.12, bwrap 0.6.1) |
@@ -485,7 +485,7 @@ CHANGELOG.md                every release, every audit finding
 |---|---|
 | **M1 / M1.1** ✓ | guidance loop, OpenAI-compatible providers, confined shell, journal |
 | **M1.2** ✓ | integration certification on a real host ([record](docs/certification/M1.2-calisota-20261007.md)); open: 24.04 + AppArmor restriction |
-| **M2** ✓ | Linux capability layer: files, search, patch, `todo`, ASK approvals (0.4.0), commitment latch, background processes (0.7.0), **MCP client (0.8.0)** |
+| **M2** ✓ | Linux capability layer: files, search, patch, `todo`, ASK approvals (0.4.0), commitment latch, background processes (0.7.0), **MCP client (0.8.0)**, **web fetch + search (0.9.0, I18)** |
 | M3 (partial) | isolation, deepened: **memory/task limits via a systemd user scope, background processes ✓ (0.7.0)**; per-capability scopes, seccomp, credential broker still open |
 | M4 (partial) | ledger: **resumable runs ✓ (0.5.0, transcript-level, never replays effects)**; content-addressed artifacts and replay still open |
 | **M5** ✓ | context: token estimate, compaction, ranked session search (0.6.0); **skills (0.8.0)** |

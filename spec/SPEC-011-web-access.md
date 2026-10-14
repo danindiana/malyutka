@@ -1,6 +1,6 @@
 # SPEC-011 — Web access (search and fetch)
 
-**Status:** `web_fetch` and `web_search` (SearXNG, Brave, Tavily) implemented (unreleased, planned 0.9.0) · **Invariant:** I18 (new) · **Roadmap:** M2 tail
+**Status:** `web_fetch` and `web_search` (SearXNG, Brave, Tavily) implemented in 0.9.0 · **Invariant:** I18 (new) · **Roadmap:** M2 tail
 
 ## Goals
 Let the agent search the web and read pages without giving up the gates: every web call is an external effect
