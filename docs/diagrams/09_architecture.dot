@@ -30,6 +30,7 @@ digraph architecture {
         process [label="process.nim\nbackground processes (I16)", color="#f0883e"];
         skills [label="skills.nim\nSKILL.md notes (data)", color="#d29922"];
         mcp [label="mcp.nim\nMCP stdio client (I17)", color="#f0883e"];
+        webn [label="web.nim · urlsafety.nim\nconfig · tool · URL rules (I18)", color="#39c5cf"];
     }
     bwrap [label="bwrap child\n/bin/sh -c cmd\ntmpfs root · ws rw", color="#f0883e", fillcolor="#3a2210"];
     model [label="Model server\nOllama · vLLM · OpenAI", color="#58a6ff", fillcolor="#13294d"];
@@ -41,9 +42,13 @@ digraph architecture {
     cli -> core; core -> provider -> model [label="POST /v1/chat/completions"];
     core -> tools; core -> policy; core -> journal; core -> session; core -> events;
     core -> latch [label="ASK 1st"]; core -> approval [label="ASK 2nd"]; core -> memory [label="system prompt"];
+    tools -> webn; webn -> webh [label="spawn in bwrap\n(network, no fs)"];
     tools -> filetools; tools -> process; tools -> skills; tools -> mcp; core -> compact [label="75% window"];
     tools -> sandbox -> bwrap; bwrap -> ws [label="rw bind-fd"];
     journal -> state; session -> state;
+    webh [label="malyutka_web (helper, -d:ssl)\nvetted-IP HTTP client · HTML→text", color="#39c5cf", fillcolor="#0d2e2e"];
+    inet [label="the internet", shape=oval, color="#58a6ff", fillcolor="#13294d"];
+    webh -> inet [label="HTTPS"];
     mcp_srv [label="MCP server(s)\nsandboxed child, stdio JSON-RPC", color="#f85149", fillcolor="#3a1518"];
     mcp -> mcp_srv [label="pipes"]; process -> bwrap [style=dashed];
     skills -> state [label="skills/<name>/SKILL.md"];

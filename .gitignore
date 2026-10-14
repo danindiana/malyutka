@@ -1,4 +1,5 @@
 /malyutka
+/malyutka_web
 # compiled test executables: every tests/test_* except the sources
 tests/test_*
 !tests/test_*.nim

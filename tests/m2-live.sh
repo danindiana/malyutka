@@ -288,7 +288,18 @@ c_mcp() {
   return 0
 }
 
-ALL_CHECKS="files shell_and_files ask_deny ask_once ask_timeout resume memory mandate compaction process skills mcp"
+c_web() {
+  fresh "web-$2"
+  curl -fsS -m 8 -o /dev/null https://example.com || { log "      (no internet: skipping)"; return 2; }
+  approved_run "web-$2" "$1" once "Use the web_fetch tool to fetch https://example.com/ and tell me the page title. Answer with the title only." --web
+  invariants "web-$2" || return $?
+  chk has "$WORK/web-$2.trace" approval.request tool=web_fetch || return 2      # a web call never runs unasked
+  chk has "$WORK/web-$2.trace" web.fetched host=example.com || return 2
+  grep -qi 'example domain' "$WORK/web-$2.err" || return 2
+  return 0
+}
+
+ALL_CHECKS="files shell_and_files ask_deny ask_once ask_timeout resume memory mandate compaction process skills mcp web"
 CHECKS=${M2_CHECKS:-$ALL_CHECKS}
 for m in $MODELS; do
   log ""; log "== model $m"

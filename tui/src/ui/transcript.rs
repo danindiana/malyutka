@@ -146,6 +146,7 @@ fn tool_emoji(name: &str) -> &'static str {
         "todo" => "📋",
         "memory" => "🧠",
         "skills_list" | "skill_view" | "skill_save" => "📚",
+        "web_fetch" | "web_search" => "🌐",
         "process" => "⚙️",
         n if n.starts_with("mcp_") => "🔌",
         _ => "⚡",

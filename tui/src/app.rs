@@ -34,6 +34,7 @@ pub struct Config {
     pub allow_process: bool,
     pub allow_skills: bool,
     pub allow_mcp: bool,
+    pub allow_web: bool,
     pub personality: String,
     pub context_window: Option<u64>,
     pub compress_next: bool,
@@ -179,6 +180,7 @@ impl App {
             (self.cfg.allow_process, "--allow-process"),
             (self.cfg.allow_skills, "--skills"),
             (self.cfg.allow_mcp, "--mcp"),
+            (self.cfg.allow_web, "--web"),
         ] {
             if on {
                 args.push(flag.to_string());
@@ -459,6 +461,29 @@ impl App {
                         .unwrap_or(0)
                 )));
             }
+            "web.fetched" => {
+                let n = |k: &str| e.payload.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+                self.items.push(Item::Note(format!(
+                    "web: {} → HTTP {} ({} bytes{}{})",
+                    e.s("host"),
+                    n("status"),
+                    n("bytes"),
+                    if n("redirects") > 0 {
+                        format!(", {} redirect(s)", n("redirects"))
+                    } else {
+                        String::new()
+                    },
+                    if e.payload.get("cached").and_then(|v| v.as_bool()) == Some(true) {
+                        ", cached"
+                    } else {
+                        ""
+                    }
+                )));
+            }
+            "web.unavailable" => self.items.push(Item::Warn(format!(
+                "web tools unavailable: {}",
+                e.s("reason")
+            ))),
             "mcp.connected" => {
                 let server = e.s("server");
                 let n = e.payload.get("tools").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -731,6 +756,7 @@ mod tests {
                 allow_process: false,
                 allow_skills: false,
                 allow_mcp: false,
+                allow_web: false,
                 personality: String::new(),
                 context_window: None,
                 compress_next: false,
@@ -834,6 +860,7 @@ mod picker_tests {
                 allow_process: false,
                 allow_skills: false,
                 allow_mcp: false,
+                allow_web: false,
                 personality: String::new(),
                 context_window: None,
                 compress_next: false,
@@ -1130,5 +1157,24 @@ mod picker_tests {
         a.cfg.allow_skills = true;
         let args = a.run_args("x");
         assert!(args.contains(&"--mcp".to_string()) && args.contains(&"--skills".to_string()));
+    }
+
+    #[test]
+    fn web_events_and_flag() {
+        let mut a = app();
+        a.on_event(ev("web.fetched", serde_json::json!({"host":"example.com","status":200,"bytes":577,"redirects":1,"cached":false})));
+        a.on_event(ev("web.fetched", serde_json::json!({"host":"example.com","status":200,"bytes":10,"redirects":0,"cached":true})));
+        a.on_event(ev(
+            "web.unavailable",
+            serde_json::json!({"reason":"helper not found"}),
+        ));
+        assert!(
+            matches!(&a.items[0], Item::Note(t) if t.contains("example.com") && t.contains("HTTP 200") && t.contains("1 redirect"))
+        );
+        assert!(matches!(&a.items[1], Item::Note(t) if t.contains("cached")));
+        assert!(matches!(&a.items[2], Item::Warn(t) if t.contains("helper not found")));
+        assert!(!a.run_args("x").contains(&"--web".to_string()));
+        a.cfg.allow_web = true;
+        assert!(a.run_args("x").contains(&"--web".to_string()));
     }
 }

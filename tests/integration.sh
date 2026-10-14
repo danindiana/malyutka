@@ -457,5 +457,73 @@ else bad "skills list/view: $(tail -3 "$WORK/m7f.err")"; fi
 unset MALYUTKA_STATE_DIR
 export MALYUTKA_STATE_DIR="$WORK/state"
 
+# 16. Web access through the real CLI (sandboxed helper, local fake web server).
+if [ -x "$(dirname "$BIN")/malyutka_web" ]; then
+mkdir -p "$WORK/m8/ws" && cd "$WORK/m8/ws" || exit 2
+P8=$((P7 + 40)); WEBP=$((P8 + 20))
+export MALYUTKA_STATE_DIR="$WORK/m8/state"; mkdir -p "$MALYUTKA_STATE_DIR"
+python3 -I "$HERE/fake_web.py" "$WEBP" "$WORK/m8/web.log" >/dev/null 2>&1 &
+echo $! > "$WORK/m8/web.pid"; sleep 0.8
+WURL="http://127.0.0.1:$WEBP/html"
+echo "{\"fetch\": {\"allowPrivateHosts\": [\"127.0.0.1\"]}}" > "$MALYUTKA_STATE_DIR/web.json"; chmod 600 "$MALYUTKA_STATE_DIR/web.json"
+python3 -c 'import json,sys; print(json.dumps([[{"name":"web_fetch","args":{"url":sys.argv[1]}}]]))' "$WURL" > "$WORK/m8a.json"
+python3 -I "$HERE/fake_script.py" "$P8" "$WORK/m8a.json" >/dev/null 2>&1 & sleep 0.5
+: > "$WORK/m8/web.log"
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$P8 --web --json 'web unasked' > "$WORK/m8a.trace" 2> "$WORK/m8a.err"
+if grep -q 'asked by web.ask' "$WORK/m8a.err" && [ ! -s "$WORK/m8/web.log" ]; then
+  ok "web: an unasked fetch is denied (asked by web.ask) and never reached the server"
+else bad "web unasked: $(tail -2 "$WORK/m8a.err") log=$(cat "$WORK/m8/web.log")"; fi
+python3 -I "$HERE/fake_script.py" $((P8 + 1)) "$WORK/m8a.json" >/dev/null 2>&1 & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P8 + 1)) --web --approvals:off --i-know-approvals-off --json 'web approved' \
+  > "$WORK/m8b.trace" 2> "$WORK/m8b.err"
+if grep -q '\[web_fetch http://127.0.0.1:'"$WEBP"'/html' "$WORK/m8b.err" && grep -q '# Heading' "$WORK/m8b.err" \
+   && grep -q 'untrusted page text' "$WORK/m8b.err" && grep -q '"web.fetched"' "$WORK/m8b.trace" && [ "$(grep -c 'GET /html' "$WORK/m8/web.log")" = 1 ]; then
+  ok "web: an approved fetch returns labelled untrusted text through the sandboxed helper (one request)"
+else bad "web approved: $(tail -2 "$WORK/m8b.err")"; fi
+"$BIN" journal >/dev/null 2>&1 && ok "web: the journal records the B3 call and stays healthy" || bad "journal after web fetch"
+
+# DENY stays DENY even with approvals off: no web.json opt-in, metadata, credentials
+rm -f "$MALYUTKA_STATE_DIR/web.json"
+python3 -c 'import json,sys; u=sys.argv[1]; print(json.dumps([[{"name":"web_fetch","args":{"url":u}}],[{"name":"web_fetch","args":{"url":"http://169.254.169.254/latest/meta-data/"}}],[{"name":"web_fetch","args":{"url":"https://example.com/?api_key=abcdef"}}]]))' "$WURL" > "$WORK/m8c.json"
+python3 -I "$HERE/fake_script.py" $((P8 + 2)) "$WORK/m8c.json" >/dev/null 2>&1 & sleep 0.5
+: > "$WORK/m8/web.log"
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P8 + 2)) --web --approvals:off --i-know-approvals-off --json 'web denials' \
+  > "$WORK/m8c.trace" 2> "$WORK/m8c.err"
+n=$(grep -c '"verdict":"DENY"' "$WORK/m8c.trace")
+if [ "$n" = 3 ] && [ ! -s "$WORK/m8/web.log" ] && grep -q 'not public' "$WORK/m8c.err" && grep -q 'metadata' "$WORK/m8c.err" && grep -q 'credential' "$WORK/m8c.err"; then
+  ok "web: private target, metadata address and a credential in the URL are DENIED even with approvals off"
+else bad "web denials: deny count=$n log=$(cat "$WORK/m8/web.log")"; fi
+
+# strict config: a world-writable web.json switches web access off
+echo '{"fetch": {"denyDomains": ["x.com"]}}' > "$MALYUTKA_STATE_DIR/web.json"; chmod 666 "$MALYUTKA_STATE_DIR/web.json"
+python3 -I "$HERE/fake_script.py" $((P8 + 3)) "$WORK/m8a.json" >/dev/null 2>&1 & sleep 0.5
+"$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P8 + 3)) --web --approvals:off --i-know-approvals-off --json 'web unsafe cfg' \
+  > "$WORK/m8d.trace" 2> "$WORK/m8d.err"
+grep -q 'web access disabled' "$WORK/m8d.err" && grep -q 'DENIED by registry' "$WORK/m8d.err" \
+  && ok "web: an unsafe web.json disables web access (the tool does not exist)" || bad "unsafe web.json: $(tail -2 "$WORK/m8d.err")"
+rm -f "$MALYUTKA_STATE_DIR/web.json"
+
+# a missing helper: tool absent, reason visible, run unaffected
+python3 -I "$HERE/fake_script.py" $((P8 + 4)) "$WORK/m8a.json" >/dev/null 2>&1 & sleep 0.5
+MALYUTKA_WEB_HELPER=/nonexistent/malyutka_web "$BIN" run --provider:vllm --model:fake --base-url:http://127.0.0.1:$((P8 + 4)) --web --json 'no helper' \
+  > "$WORK/m8e.trace" 2> "$WORK/m8e.err"; rc=$?
+grep -q '"web.unavailable"' "$WORK/m8e.trace" && grep -q 'helper not found' "$WORK/m8e.trace" && [ $rc -eq 0 ] \
+  && ok "web: a missing helper means no tool, a visible reason, and an unaffected run" || bad "missing helper (exit $rc)"
+
+# the harness itself does not need libssl: mask it and run a normal task
+L=/usr/lib/x86_64-linux-gnu
+if [ -e "$L/libssl.so.3" ] && command -v bwrap >/dev/null; then
+  MALYUTKA_STATE_DIR="$WORK/m8/state2" bwrap --ro-bind / / --ro-bind /dev/null "$L/libssl.so.3" --ro-bind /dev/null "$L/libcrypto.so.3" \
+    --dev /dev --proc /proc --bind "$WORK" "$WORK" "$BIN" run --provider:mock --theme:plain 'no libssl here' > /dev/null 2>&1; rc=$?
+  [ $rc -eq 0 ] && ok "web: malyutka itself starts and runs with libssl unavailable (only the helper needs it)" || bad "harness needs libssl (exit $rc)"
+fi
+"$BIN" doctor 2>/dev/null | grep -q '^web: ' && ok "doctor reports the web helper" || bad "doctor has no web line"
+kill "$(cat "$WORK/m8/web.pid")" 2>/dev/null
+unset MALYUTKA_STATE_DIR
+export MALYUTKA_STATE_DIR="$WORK/state"
+else
+  echo "  [SKIP] web: malyutka_web is not built next to $BIN"
+fi
+
 echo "integration: $pass passed, $fail failed"
 [ $fail -eq 0 ]

@@ -441,3 +441,19 @@ proc startPiped*(argv: seq[string]; workingDir: string; keepFd: cint;
   let (pid, outFd) = spawnClean(argv, env, workingDir, keepFd, hostTree, stdinFd = inPipe[0], stderrNull = true)
   discard posix.close(inPipe[0])
   PipedChild(pid: pid, inFd: inPipe[1], outFd: outFd)
+
+proc webHelperArgv*(bwrapExe, helperExe, caFile: string): seq[string] =
+  ## The web helper's sandbox (SPEC-011): system directories read-only, a private /tmp, the helper and
+  ## (optionally) the operator's CA file bound read-only, NETWORK shared and nothing else: no workspace,
+  ## no state directory, no $HOME. A bug in TLS or HTML parsing can reach the network and nothing on disk.
+  result = @[bwrapExe, "--clearenv", "--setenv", "PATH", SandboxPath, "--setenv", "LANG", getEnv("LANG", "C.UTF-8")]
+  for d in SystemDirs:
+    if symlinkExists(d):
+      result.add ["--symlink", expandSymlink(d), d]
+    elif dirExists(d):
+      result.add ["--ro-bind", d, d]
+  # /etc/resolv.conf is usually a symlink into /run/systemd/resolve
+  if dirExists("/run/systemd/resolve"): result.add ["--ro-bind", "/run/systemd/resolve", "/run/systemd/resolve"]
+  result.add ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--ro-bind", helperExe, "/malyutka_web"]
+  if caFile.len > 0: result.add ["--ro-bind", caFile, "/ca.pem"]
+  result.add ["--unshare-all", "--share-net", "--die-with-parent", "--new-session", "--chdir", "/", "--", "/malyutka_web"]

@@ -24,7 +24,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/personality", "concise|teacher|kawaii|terse-ops"),
     (
         "/tools",
-        "toggle files|shell|memory|process|skills|mcp tools",
+        "toggle files|shell|memory|process|skills|mcp|web tools",
     ),
     ("/skin", "open the skin selector, or /skin <name>"),
     ("/skins", "open the skin selector"),
