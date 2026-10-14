@@ -93,6 +93,8 @@ proc openWorkspace*(workspace: string): WorkspaceHandle =
 proc close*(h: WorkspaceHandle) =
   if h.fd >= 0: discard posix.close(h.fd)
 
+const SandboxPath* = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 proc bwrapArgv*(wsPath: string; command: string): seq[string] =
   ## Empty tmpfs root; allowlisted system dirs read-only; private /dev, /proc,
   ## /tmp; the workspace read-write FROM FD 3 (see openWorkspace); all
@@ -100,6 +102,11 @@ proc bwrapArgv*(wsPath: string; command: string): seq[string] =
   ## (/bin -> usr/bin) are recreated as symlinks.
   ## ORDER MATTERS: /tmp is mounted before the workspace bind, otherwise a
   ## workspace located under /tmp is hidden by the tmpfs.
+  # --clearenv + the same five variables spawnClean already scrubs to: anything the
+  # launcher needed in its own environment (systemd-run's bus variables) cannot
+  # reach the sandboxed command (invariant 9).
+  result.add ["--clearenv", "--setenv", "PATH", SandboxPath, "--setenv", "HOME", wsPath,
+              "--setenv", "LANG", getEnv("LANG", "C.UTF-8"), "--setenv", "TERM", "dumb"]
   for d in SystemDirs:
     if symlinkExists(d):
       result.add ["--symlink", expandSymlink(d), d]
@@ -120,7 +127,7 @@ proc scrubbedEnv*(home: string): StringTableRef =
   ## holds provider credentials (MALYUTKA_API_KEY etc.). Only an allowlist of
   ## inert variables passes through.
   result = newStringTable(modeCaseSensitive)
-  result["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  result["PATH"] = SandboxPath
   result["HOME"] = home
   result["LANG"] = getEnv("LANG", "C.UTF-8")
   result["TERM"] = "dumb"
@@ -176,8 +183,35 @@ proc decodeStatus(status: cint): int =
   elif WIFSIGNALED(status): 128 + WTERMSIG(status).int
   else: -1
 
+proc childPids(pid: Pid): seq[Pid] =
+  ## Direct children via /proc (CONFIG_PROC_CHILDREN); empty if unreadable.
+  try:
+    for tok in readFile("/proc/" & $int(pid) & "/task/" & $int(pid) & "/children").splitWhitespace:
+      result.add Pid(parseInt(tok))
+  except CatchableError: discard
+
+proc descendants*(pid: Pid): seq[Pid] =
+  var queue = childPids(pid)
+  var i = 0
+  while i < queue.len and queue.len < 4096:
+    result.add queue[i]
+    queue.add childPids(queue[i])
+    inc i
+
+proc killSandbox*(pid: Pid) =
+  ## SIGKILL a bwrap sandbox AND everything under it. bwrap has a window right after
+  ## start in which killing only the outer process orphans the namespace's init
+  ## (PDEATHSIG not yet armed), leaving the command running. So: stop the outer
+  ## (it can no longer fork), enumerate its descendants, kill them all, then it.
+  discard posix.kill(pid, SIGSTOP)
+  let kids = descendants(pid)
+  for k in kids: discard posix.kill(k, SIGKILL)
+  discard posix.kill(pid, SIGKILL)
+
+type EnvPair* = tuple[k, v: string]
+
 proc runBounded*(argv: seq[string]; timeoutSec, maxBytes: int; workingDir = "";
-                 keepFd: cint = -1; hostTree = false):
+                 keepFd: cint = -1; hostTree = false; extraEnv: seq[EnvPair] = @[]):
     tuple[output: string, exitCode: int, truncated, timedOut: bool] =
   ## Runs argv as a DIRECT child of the harness, so bwrap's --die-with-parent
   ## binds the sandbox's lifetime to Malyutka's (even across SIGKILL). The
@@ -186,7 +220,9 @@ proc runBounded*(argv: seq[string]; timeoutSec, maxBytes: int; workingDir = "";
   ## hostTree (host realm): when the command exits or times out, its whole
   ## process group is killed, so background children do not outlive it.
   let home = if workingDir.len > 0: absolutePath(workingDir) else: getCurrentDir()
-  let (pid, fd) = spawnClean(argv, scrubbedEnv(home), workingDir, keepFd, hostTree)
+  var env = scrubbedEnv(home)
+  for (k, v) in extraEnv: env[k] = v
+  let (pid, fd) = spawnClean(argv, env, workingDir, keepFd, hostTree)
   defer: discard posix.close(fd)
   let deadline = getMonoTime() + initDuration(seconds = timeoutSec)
   var buf = newStringOfCap(min(maxBytes, 1 shl 16))
@@ -241,7 +277,7 @@ proc runBounded*(argv: seq[string]; timeoutSec, maxBytes: int; workingDir = "";
   if not reaped:
     # Sandbox: SIGKILL bwrap -> PDEATHSIG tears down the PID namespace.
     # Host: SIGKILL the whole process group.
-    discard posix.kill((if hostTree: -pid else: pid), SIGKILL)
+    if hostTree: discard posix.kill(-pid, SIGKILL) else: killSandbox(pid)
     discard reap(true)
   if hostTree:
     discard posix.kill(-pid, SIGKILL)     # stragglers left in the group
@@ -264,3 +300,112 @@ proc probeBwrap*(): tuple[ok: bool, detail: string] =
     else: (false, "bwrap present but unusable (exit " & $r.exitCode & "): " & r.output.strip)
   except CatchableError as e:
     (false, "bwrap probe failed: " & e.msg)
+
+
+# ---- resource limits via a transient systemd user scope (SPEC-008) -------------------
+
+var scopeSeq = 0
+
+proc scopeEnv*(): seq[EnvPair] =
+  ## What `systemd-run --user` needs to reach the user manager. These are given
+  ## to the launcher only; bwrap --clearenv keeps them out of the sandbox.
+  var rt = getEnv("XDG_RUNTIME_DIR")
+  if rt.len == 0:
+    let guess = "/run/user/" & $getuid()
+    if dirExists(guess): rt = guess
+  if rt.len > 0: result.add ("XDG_RUNTIME_DIR", rt)
+  let bus = getEnv("DBUS_SESSION_BUS_ADDRESS")
+  if bus.len > 0: result.add ("DBUS_SESSION_BUS_ADDRESS", bus)
+
+proc scopePrefix*(unit: string; memoryMb, pids: int): seq[string] =
+  ## argv prefix that runs the rest inside a transient scope with limits.
+  ## systemd-run exec()s the command, so it stays a direct child of the harness.
+  result = @["systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit=" & unit]
+  if memoryMb > 0: result.add ["-p", "MemoryMax=" & $memoryMb & "M", "-p", "MemorySwapMax=0"]
+  if pids > 0: result.add ["-p", "TasksMax=" & $pids]
+  result.add "--"
+
+proc nextUnit*(prefix, kind: string): string =
+  inc scopeSeq
+  prefix & "-" & kind & $scopeSeq
+
+proc probeScopes*(): tuple[ok: bool, detail: string] =
+  ## Functional probe: scope creation needs a running user manager and its bus.
+  let exe = findExe("systemd-run")
+  if exe.len == 0: return (false, "systemd-run not found")
+  if scopeEnv().len == 0: return (false, "no user session bus (XDG_RUNTIME_DIR unset)")
+  try:
+    let argv = scopePrefix("malyutka-probe-" & $getCurrentProcessId(), 64, 64)
+    let r = runBounded(@[exe] & argv[1 .. ^1] & @["/bin/true"], 10, 4096, "", -1, false, scopeEnv())
+    if r.exitCode == 0: (true, "systemd user scope")
+    else: (false, "systemd-run failed (exit " & $r.exitCode & "): " & r.output.strip.splitLines()[0])
+  except CatchableError as e:
+    (false, "scope probe failed: " & e.msg)
+
+# ---- background (detached, polled) processes -------------------------------------------
+
+type BgHandle* = object
+  pid*: Pid
+  fd*: cint     ## non-blocking read end of the combined stdout/stderr pipe
+
+proc startBackground*(argv: seq[string]; workingDir: string; keepFd: cint;
+                      extraEnv: seq[EnvPair] = @[]): BgHandle =
+  ## Same fd/env hygiene as runBounded, but returns immediately. The child is a
+  ## DIRECT child of the harness so bwrap --die-with-parent ties its life to ours.
+  let home = if workingDir.len > 0: absolutePath(workingDir) else: getCurrentDir()
+  var env = scrubbedEnv(home)
+  for (k, v) in extraEnv: env[k] = v
+  let (pid, fd) = spawnClean(argv, env, workingDir, keepFd, false)
+  let fl = fcntl(fd, F_GETFL)
+  discard fcntl(fd, F_SETFL, fl or O_NONBLOCK)
+  BgHandle(pid: pid, fd: fd)
+
+proc drainBackground*(h: BgHandle; into: var string): bool =
+  ## Reads what is available without blocking; returns false at EOF.
+  var chunk: array[4096, char]
+  while true:
+    let n = posix.read(h.fd, addr chunk[0], chunk.len)
+    if n < 0:
+      if errno == EINTR: continue
+      return errno == EAGAIN or errno == EWOULDBLOCK
+    if n == 0: return false
+    for i in 0 ..< n: into.add chunk[i]
+
+proc pollExit*(pid: Pid): tuple[exited: bool, code: int] =
+  var status: cint
+  let w = waitpid(pid, status, WNOHANG)
+  if w == pid: (true, decodeStatus(status))
+  elif w < 0 and errno == ECHILD: (true, -1)
+  else: (false, 0)
+
+proc killBackground*(h: BgHandle): int =
+  ## Kill the sandbox and everything under it (see killSandbox).
+  killSandbox(h.pid)
+  var status: cint
+  while true:
+    let w = waitpid(h.pid, status, 0)
+    if w == h.pid: return decodeStatus(status)
+    if w < 0 and errno == EINTR: continue
+    return -1
+
+proc closeBackground*(h: BgHandle) = discard posix.close(h.fd)
+
+proc pidAlive*(pid: Pid): bool =
+  ## Signal 0: true while the pid exists (zombies count; callers reap first).
+  posix.kill(pid, 0) == 0 or errno == EPERM
+
+proc scopedArgv*(unit: string; memoryMb, pids: int; inner: seq[string]): seq[string] =
+  ## `inner` wrapped in a limited transient scope. systemd-run is resolved to an
+  ## absolute path because spawnClean uses execve (no PATH search).
+  var pre = scopePrefix(unit, memoryMb, pids)
+  pre[0] = findExe("systemd-run")
+  pre & inner
+
+proc sandboxCommand*(exe, wsPath, command: string; scopeActive: bool; unitPrefix, kind: string;
+                     memoryMb, pids: int): tuple[argv: seq[string], env: seq[EnvPair]] =
+  ## The one place the sandboxed argv is assembled for `shell` and `process`:
+  ## bwrap, wrapped in a limited scope when the probe succeeded.
+  result.argv = @[exe] & bwrapArgv(wsPath, command)
+  if scopeActive:
+    result.argv = scopedArgv(nextUnit(unitPrefix, kind), memoryMb, pids, result.argv)
+    result.env = scopeEnv()

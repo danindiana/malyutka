@@ -64,6 +64,10 @@ type
     policyId*: string           ## which layer decided (invariant 8)
     reason*: string
 
+  CgroupMode* = enum
+    ## Resource limits via a transient systemd user scope (SPEC-008).
+    cmAuto = "auto", cmRequire = "require", cmOff = "off"
+
   ApprovalMode* = enum
     ## Who answers an ASK. `deny` is the fail-closed default.
     amDeny = "deny", amStdin = "stdin", amTty = "tty", amOff = "off"
@@ -80,6 +84,13 @@ type
     soul*: string               ## operator text prepended to the system prompt
     personality*: string
     memoryText*: string         ## snapshot of memory.md taken at run start
+    allowProcess*: bool         ## enable the background `process` tool
+    cgroupMode*: CgroupMode
+    limitMemoryMb*: int         ## MemoryMax for sandboxed commands (0 = none)
+    limitPids*: int             ## TasksMax (0 = none)
+    maxProcesses*: int          ## concurrently running background processes
+    scopeActive*: bool          ## set by the harness after a successful scope probe
+    unitPrefix*: string         ## transient unit name prefix (run id)
     contextWindow*: int         ## tokens; 0 = compaction off (SPEC-006)
     compressNow*: bool          ## compact the loaded history before the first call
     approvals*: ApprovalMode
@@ -103,6 +114,8 @@ type
 proc baseConfig*(): AgentConfig =
   ## Defaults with no environment or filesystem input (tests use this).
   AgentConfig(maxSteps: 16, cwd: ".", allowShell: false, allowFiles: false, allowMemory: false,
+    allowProcess: false, cgroupMode: cmAuto, limitMemoryMb: 2048, limitPids: 512, maxProcesses: 4,
+    scopeActive: false, unitPrefix: "malyutka",
     approvals: amDeny, approvalTimeoutSec: 300, unconfinedHost: false,
     shellTimeoutSec: 30, maxOutputBytes: 64 * 1024, repeatLimit: 3,
     providerName: "mock", model: "mock", baseUrl: "", apiKey: "",

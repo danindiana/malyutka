@@ -21,7 +21,7 @@ behind a gate and with an invariant row. That is why the list below is ordered b
 | P2 | Context compression (`/compress`, auto) | **done (0.6.0), I10 enforced** | M | [SPEC-006](../spec/SPEC-006-context-compaction.md) |
 | P2 | Skills (agentskills.io `SKILL.md`) | none | M | [todo](../todo/P2-skills.md) |
 | P2 | MCP client (stdio) | none | M | [todo](../todo/P2-mcp-client.md) |
-| P2 | Background `process` tool | none | M | [todo](../todo/P2-background-process.md) |
+| P2 | Background `process` tool | **done (0.7.0), I16**; plus memory/task limits via a systemd user scope | M | [SPEC-008](../spec/SPEC-008-processes-and-limits.md) |
 | P2 | Cron / scheduler | none | M | [todo](../todo/P2-cron.md) |
 | P2 | Subagent delegation | none (M6) | M–L | [todo](../todo/P2-delegation.md) |
 | P2 | Docker / SSH terminal backends | bwrap only | M | [todo](../todo/P2-exec-backends.md) |

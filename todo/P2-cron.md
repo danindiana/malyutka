@@ -1,6 +1,6 @@
 # Cron / scheduler
 
-**Priority:** P2 · **Size:** M · **Depends on:** SPEC-002, background process
+**Priority:** P2 · **Size:** M · **Depends on:** SPEC-002, SPEC-008 (process tool, delivered)
 
 ## What
 Scheduled unattended runs with delivery of results.

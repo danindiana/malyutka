@@ -226,7 +226,22 @@ c_compaction() {
   return 0
 }
 
-ALL_CHECKS="files shell_and_files ask_deny ask_once ask_timeout resume memory mandate compaction"
+c_process() {
+  fresh "proc-$2"
+  local tag="m2tag-$$-p$2"
+  run "proc-$2" "$1" "Use the process tool (action start) to run exactly this command in the background: sleep 45 # $tag . Then poll it once, then report its state. Do not kill it." --allow-process --cgroups:off
+  invariants "proc-$2" || return $?
+  chk has "$WORK/proc-$2.trace" process.started || return 2
+  # whatever the model did, nothing may outlive the run (invariant 16)
+  local n=1 i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    n=$(chk survivors "$tag"); [ "$n" = 0 ] && break; sleep 0.3
+  done
+  [ "$n" = 0 ] || { log "      $n process(es) outlived the run"; return 1; }
+  return 0
+}
+
+ALL_CHECKS="files shell_and_files ask_deny ask_once ask_timeout resume memory mandate compaction process"
 CHECKS=${M2_CHECKS:-$ALL_CHECKS}
 for m in $MODELS; do
   log ""; log "== model $m"

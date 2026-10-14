@@ -13,12 +13,13 @@ digraph gap {
       h5 [label="File tools · todo\nASK approvals (0.4.0)", color="#3fb950"];
       h6 [label="Session resume · memory\nSOUL.md · personalities (0.5.0)", color="#3fb950"];
       h7 [label="TUI: multi-turn · approval modal\n/undo /retry · diff + todo views", color="#3fb950"];
-      h8 [label="Context compaction (I10)\nranked session search (0.6.0)", color="#3fb950"]; }
+      h8 [label="Context compaction (I10)\nranked session search (0.6.0)", color="#3fb950"];
+      h9 [label="Background processes (I16)\nmemory/task limits (0.7.0)", color="#3fb950"]; }
     subgraph cluster_def { label="Deferred (todo/)"; fontcolor="#d29922"; color="#d29922"; style="rounded";
       d3 [label="Skills (agentskills.io)", color="#d29922"];
       d4 [label="MCP stdio client", color="#d29922"];
       d5 [label="Subagent delegation", color="#d29922"];
-      d6 [label="Background process tool · cron", color="#d29922"];
+      d6 [label="Cron", color="#d29922"];
       d7 [label="Docker / SSH backends", color="#d29922"];
       d8 [label="Checkpoints / rollback", color="#d29922"];
       d9 [label="Trajectory JSONL export", color="#d29922"]; }

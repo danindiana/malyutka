@@ -1,6 +1,6 @@
 digraph process_lifetime {
     graph [bgcolor="#0d1117", rankdir=LR, fontname="Helvetica", fontcolor="#e6edf3", labelloc="t", fontsize=20,
-           label="03 · Process lifetime: nothing a model starts outlives its bound\n ", nodesep=0.35, ranksep=0.5];
+           label="03 · Process lifetime: nothing a model starts outlives its bound (updated for 0.7.0)\n ", nodesep=0.35, ranksep=0.5];
     node  [fontname="Helvetica", fontcolor="#e6edf3", color="#30363d", style="filled,rounded", shape=box, penwidth=2,
            margin="0.22,0.15", fillcolor="#161b22", fontsize=12];
     edge  [color="#8b949e", fontname="Helvetica", fontcolor="#adbac7", penwidth=1.5, arrowsize=0.85, fontsize=10];
@@ -19,11 +19,16 @@ digraph process_lifetime {
         grp   [label="its process group\nkilled on exit/timeout", color="#f0883e"];
         esc   [label="escapes: processes that\nleave the group;\ngrandchildren on harness SIGKILL", color="#f85149"];
     }
-    kill  [label="timeout (poll) or harness death", color="#d29922"];
+    proc  [label="process tool (background)\nmax 4 · output ring 64 KiB\nkilled at run end (I16)", color="#3fb950"];
+    scope [label="optional systemd user scope\nMemoryMax · TasksMax\n(--cgroups: auto/require/off)", color="#39c5cf", fillcolor="#0d2e2e"];
+    kill  [label="timeout, tool kill, run end,\nor harness death", color="#d29922"];
+    killseq [label="killSandbox:\nSIGSTOP outer → list descendants\n→ SIGKILL all (start-up race)", color="#d29922"];
 
     harness -> spawn -> bwrap -> ns;
     spawn -> sh -> grp;
     grp -> esc [style=dashed, color="#f85149", label="not covered\n(cgroup: M3)"];
-    kill -> bwrap [label="SIGKILL → namespace torn down", color="#d29922"];
+    kill -> killseq -> bwrap [color="#d29922"];
+    proc -> bwrap [label="same broker as shell", style=dashed];
+    scope -> bwrap [label="wraps (exec)", style=dashed, color="#39c5cf"];
     kill -> grp   [label="SIGKILL -pgid", color="#d29922"];
 }

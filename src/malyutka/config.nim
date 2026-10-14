@@ -16,6 +16,13 @@ proc parseApprovalMode*(s: string): ApprovalMode =
   of "off": amOff
   else: raise newException(ValueError, "unknown approvals mode: " & s)
 
+proc parseCgroupMode*(s: string): CgroupMode =
+  case s.toLowerAscii
+  of "auto": cmAuto
+  of "require": cmRequire
+  of "off": cmOff
+  else: raise newException(ValueError, "unknown cgroups mode: " & s)
+
 proc defaultConfig*(): AgentConfig =
   result = baseConfig()
   result.cwd = getCurrentDir()
@@ -39,6 +46,11 @@ proc loadConfig*(path: string; base = defaultConfig()): AgentConfig =
   if j.hasKey("maxSteps"): result.maxSteps = j["maxSteps"].getInt
   if j.hasKey("allowShell"): result.allowShell = j["allowShell"].getBool
   if j.hasKey("allowFiles"): result.allowFiles = j["allowFiles"].getBool
+  if j.hasKey("allowProcess"): result.allowProcess = j["allowProcess"].getBool
+  if j.hasKey("cgroups"): result.cgroupMode = parseCgroupMode(j["cgroups"].getStr)
+  if j.hasKey("limitMemoryMb"): result.limitMemoryMb = j["limitMemoryMb"].getInt
+  if j.hasKey("limitPids"): result.limitPids = j["limitPids"].getInt
+  if j.hasKey("maxProcesses"): result.maxProcesses = j["maxProcesses"].getInt
   if j.hasKey("contextWindow"): result.contextWindow = j["contextWindow"].getInt
   if j.hasKey("allowMemory"): result.allowMemory = j["allowMemory"].getBool
   if j.hasKey("personality"): result.personality = j["personality"].getStr.toLowerAscii
