@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased: live validation (no kernel change)
+
+- `tests/m2-live.sh` + `tests/m2_live_check.py`: drives the real harness with real
+  Ollama models through file tools, ASK approvals (deny / once / timeout over the
+  stdin channel), resume, memory and mandates; asserts on harness behaviour and
+  journal health, classifies provider flakes separately. Self-tested by
+  `tests/m2_live_check_selftest.py` (mutated traces; runs in CI).
+- Record: `docs/certification/M2-live-calisota-20261013.md` (4 models x 8 checks, all PASS).
+- TUI: `/mandates`, mandate event lines, approval modal hint about mandates.
+- Diagrams 09 and 10 now show the commitment latch and the newer modules.
+
 ## 0.5.0 sessions, resume, memory, personalities (M4-lite)
 
 - **Incremental sessions**: `sessions/<run>.json` is written atomically (temp +

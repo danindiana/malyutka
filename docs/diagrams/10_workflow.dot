@@ -13,7 +13,8 @@ digraph workflow {
     reg [label="Registry lookup", color="#3fb950"];
     j1 [label="Journal: intent (fdatasync)", color="#d29922"];
     pol [label="Policy compose\nceiling · confinement · denylist", color="#3fb950"];
-    approver [label="Approver (ASK only)\nonce · session · always · deny\ngrants · 300 s timeout ⟶ deny\n(DENY never reaches it: I14)", color="#d29922"];
+    latch [label="Commitment latch\nlatched mandate covers it?\n(scope · budget · TTL; L1-L5)", color="#3fb950"];
+    approver [label="Approver (ASK only)\nonce · session · always · deny\ngrants · 300 s timeout ⟶ deny\nno approver ⟶ deny (DENY never reaches it: I14)", color="#d29922"];
     j2 [label="Journal: decision + started", color="#d29922"];
     exec [label="Execute\nbwrap shell / file tools\n(openat + O_NOFOLLOW)", color="#f0883e"];
     j3 [label="Journal: outcome", color="#d29922"];
@@ -27,7 +28,9 @@ digraph workflow {
     ask_model -> prop [label="tool calls"];
     prop -> reg -> j1 -> pol -> j2 -> exec -> j3 -> obs;
     obs -> ask_model [label="next step"];
-    pol -> approver [label="ASK", color="#d29922"];
+    pol -> latch [label="ASK", color="#d29922"];
+    latch -> j2 [label="covered", color="#3fb950"];
+    latch -> approver [label="not covered", color="#d29922"];
     approver -> j2 [label="allow", color="#d29922"];
     reg -> deny [label="unknown", color="#f85149"];
     j1 -> deny [label="not durable", color="#f85149"];

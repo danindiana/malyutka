@@ -12,6 +12,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/sessions", "list saved sessions"),
     ("/resume", "show the resume point, or /resume <id>"),
     ("/memory", "show memory.md (read-only)"),
+    ("/mandates", "list commitment-latch mandates (read-only)"),
     ("/personality", "concise|teacher|kawaii|terse-ops"),
     ("/tools", "toggle files|shell|memory tools"),
     ("/skin", "open the skin selector, or /skin <name>"),

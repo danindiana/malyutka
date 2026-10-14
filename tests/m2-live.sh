@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+# M2 live validation: drives the real harness with real local models (Ollama)
+# through the file tools, approvals, resume, memory and mandates, and checks
+# what the HARNESS did, never what the model said.
+#
+#   tests/m2-live.sh                              # M2_MODELS="qwen3.5:9b"
+#   M2_MODELS="qwen3.5:9b devstral-small-2:24b" tests/m2-live.sh
+#
+# Env: M2_OLLAMA_URL (default http://127.0.0.1:11434), M2_ATTEMPTS (3 per
+# check), M2_TIMEOUT seconds per run (240), M2_BIN (./malyutka).
+# Needs bubblewrap for the shell checks, python3, and a built ./malyutka.
+#
+# Results per model and check:
+#   PASS   the harness did what the spec says
+#   FAIL   a HARNESS invariant broke (unmatched decision, escape, corrupt journal...)
+#   SKIP   the model never produced the behaviour the check needs after all
+#          attempts: not a harness fault, but the check proves nothing
+# Exit: 0 no FAIL; 1 any FAIL; 3 no FAIL but some check never passed on any model.
+# Writes m2-live-report-<stamp>.txt (gitignored).
+set -u
+cd "$(dirname "$0")/.." || exit 2
+ROOT=$PWD
+HERE=$ROOT/tests
+BIN=${M2_BIN:-$ROOT/malyutka}
+OLLAMA=${M2_OLLAMA_URL:-http://127.0.0.1:11434}
+MODELS=${M2_MODELS:-qwen3.5:9b}
+ATTEMPTS=${M2_ATTEMPTS:-3}
+TMO=${M2_TIMEOUT:-240}
+STAMP=$(date +%Y%m%d-%H%M%S)-$$
+REPORT="$ROOT/m2-live-report-$STAMP.txt"
+WORK=$(mktemp -d -t malyutka-m2live-XXXXXX)
+fails=0; skips=0
+declare -A passed_anywhere=() seen_check=()
+log()  { echo "$*" | tee -a "$REPORT"; }
+cleanup() { cd "$ROOT" && rm -rf "${WORK:?}"; }
+trap cleanup EXIT
+
+[ -x "$BIN" ] || { echo "build first: nimble build -y" >&2; exit 2; }
+curl -fsS "$OLLAMA/api/tags" >/dev/null 2>&1 || { echo "no Ollama at $OLLAMA" >&2; exit 2; }
+log "M2 live validation $STAMP"
+log "  host     $(uname -sr), $(lsb_release -ds 2>/dev/null || echo unknown)"
+log "  harness  $("$BIN" doctor 2>/dev/null | head -1)"
+log "  models   $MODELS"
+
+chk() { python3 -I "$HERE/m2_live_check.py" "$@"; }
+
+# run NAME MODEL PROMPT [extra flags...]; trace -> $WORK/NAME.trace, stderr -> .err
+run() {
+  local name=$1 model=$2 prompt=$3; shift 3
+  timeout "$TMO" "$BIN" run --provider:ollama --model:"$model" --base-url:"$OLLAMA" \
+    --json --theme:plain "$@" "$prompt" > "$WORK/$name.trace" 2> "$WORK/$name.err" < /dev/null
+  RC=$?
+}
+# Harness invariants that must hold whatever the model did.
+invariants() { # name -> 0 ok, 1 harness violation, 2 provider flake (retry)
+  local v rc
+  v=$(chk invariants "$WORK/$1.trace"); rc=$?
+  if [ $rc -ne 0 ]; then
+    # A run that died on a provider error (exit 1, or killed by the timeout) has
+    # no final/halt event by design: that is an environment flake, not a harness bug.
+    if [ "$v" = "VIOLATION: run ended without agent.final or agent.halt" ] && { [ "${RC:-0}" -eq 1 ] || [ "${RC:-0}" -eq 124 ]; }; then
+      log "      provider flake in $1 (exit $RC): $(tail -n 2 "$WORK/$1.err" | tr '\n' ' ')"
+      return 2
+    fi
+    log "      invariant violation in $1: $v"
+    return 1
+  fi
+  "$BIN" journal >/dev/null 2>&1
+  local jr=$?
+  [ $jr -eq 0 ] || { log "      journal unhealthy after $1 (exit $jr)"; return 1; }
+  return 0
+}
+verdict() { # model check status(pass|fail|skip) note
+  local m=$1 c=$2 s=$3 note=${4:-}
+  seen_check[$c]=1
+  case $s in
+    pass) log "  PASS  [$m] $c"; passed_anywhere[$c]=1 ;;
+    fail) log "  FAIL  [$m] $c $note"; fails=$((fails+1)) ;;
+    skip) log "  SKIP  [$m] $c $note"; skips=$((skips+1)) ;;
+  esac
+}
+# attempt MODEL CHECK FN: FN returns 0 pass, 1 harness FAIL, 2 model-did-not-comply (retry)
+attempt() {
+  local m=$1 c=$2 fn=$3 i rc
+  for i in $(seq 1 "$ATTEMPTS"); do
+    "$fn" "$m" "$i"; rc=$?
+    [ $rc -eq 0 ] && { verdict "$m" "$c" pass; return; }
+    [ $rc -eq 1 ] && { verdict "$m" "$c" fail "(attempt $i)"; return; }
+  done
+  verdict "$m" "$c" skip "(model did not comply in $ATTEMPTS attempts)"
+}
+
+fresh() { # name -> new workspace + state (inside $WORK), cd into the workspace
+  local d="${WORK:?}/$1"
+  rm -rf "$d"
+  mkdir -p "$d/ws"
+  export MALYUTKA_STATE_DIR="$d/state"
+  cd "$d/ws" || exit 2
+}
+
+# ---- checks -----------------------------------------------------------------
+c_files() { # model attempt
+  fresh "files-$2"
+  run "files-$2" "$1" "Use the write_file tool to create notes/hello.txt containing exactly: alpha beta gamma. Then use patch to replace beta with BETA. Then read_file it and report the content." --allow-files
+  invariants "files-$2" || return $?
+  [ -f notes/hello.txt ] || return 2
+  grep -q 'alpha BETA gamma' notes/hello.txt || return 2
+  chk has "$WORK/files-$2.trace" policy.decision verdict=ALLOW || return 2
+  return 0
+}
+c_shell_and_files() {
+  fresh "sf-$2"
+  run "sf-$2" "$1" "Write a file calc.py that prints 6*7 using write_file, then run it with the shell tool (python3 calc.py) and tell me the output." --allow-files --allow-shell
+  invariants "sf-$2" || return $?
+  [ -f calc.py ] || return 2
+  chk has "$WORK/sf-$2.trace" tool.proposed name=shell || return 2
+  grep -q '42' "$WORK/sf-$2.err" || return 2
+  return 0
+}
+# Answer the first approval.request in NAME.trace over fifo fd 7 (PID = harness).
+responder() { # name answer
+  local name=$1 answer=$2 aid="" t=0
+  while [ -z "$aid" ] && [ $t -lt $((TMO * 5)) ]; do
+    aid=$(grep -m1 '"approval.request"' "$WORK/$name.trace" 2>/dev/null | grep -oE '"action":"[^"]+"' | head -1 | cut -d'"' -f4)
+    kill -0 "$PID" 2>/dev/null || break
+    sleep 0.2; t=$((t+1))
+  done
+  [ -n "$aid" ] && echo "{\"action\":\"$aid\",\"answer\":\"$answer\"}" >&7
+}
+ask_run() { # name model answer-or-"" [extra flags...]
+  local name=$1 model=$2 answer=$3; shift 3
+  rm -f "$WORK/$name.fifo"
+  mkfifo "$WORK/$name.fifo"
+  timeout "$TMO" "$BIN" run --provider:ollama --model:"$model" --base-url:"$OLLAMA" --json --theme:plain \
+    --allow-shell --approvals:stdin "$@" \
+    "Run exactly this shell command and nothing else: touch asked.marker; chmod -R 777 ." \
+    < "$WORK/$name.fifo" > "$WORK/$name.trace" 2> "$WORK/$name.err" &
+  PID=$!
+  exec 7> "$WORK/$name.fifo"
+  if [ -n "$answer" ]; then responder "$name" "$answer"; fi
+  wait $PID; RC=$?
+  exec 7>&-
+}
+c_ask_deny() {
+  fresh "askd-$2"; ask_run "askd-$2" "$1" deny
+  invariants "askd-$2" || return $?
+  chk has "$WORK/askd-$2.trace" approval.request || return 2
+  [ ! -e asked.marker ] || { log "      denied command ran anyway"; return 1; }
+  chk has "$WORK/askd-$2.trace" approval.answer answer=deny || return 1
+  return 0
+}
+c_ask_once() {
+  fresh "aske-$2"; ask_run "aske-$2" "$1" once
+  invariants "aske-$2" || return $?
+  chk has "$WORK/aske-$2.trace" approval.request || return 2
+  [ -e asked.marker ] || return 2
+  chk has "$WORK/aske-$2.trace" policy.decision policy=approval.user verdict=ALLOW || return 1
+  return 0
+}
+c_ask_timeout() {
+  fresh "askt-$2"; ask_run "askt-$2" "$1" "" --approval-timeout:2
+  invariants "askt-$2" || return $?
+  chk has "$WORK/askt-$2.trace" approval.request || return 2
+  [ ! -e asked.marker ] || return 1
+  chk has "$WORK/askt-$2.trace" approval.answer answer=deny source=timeout || return 1
+  return 0
+}
+c_resume() {
+  fresh "res-$2"
+  run "res1-$2" "$1" "Remember this codeword for later: PINEAPPLE-7. Just acknowledge it."
+  invariants "res1-$2" || return $?
+  run "res2-$2" "$1" "What was the codeword I asked you to remember? Answer with the codeword only." --resume:last
+  invariants "res2-$2" || return $?
+  grep -qi 'PINEAPPLE-7' "$WORK/res2-$2.err" || return 2
+  "$BIN" sessions --json | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d[0]["parent"] else 1)' || return 1
+  return 0
+}
+c_memory() {
+  fresh "mem-$2"
+  run "mem1-$2" "$1" "Use the memory tool (op add) to save this note: operator prefers tabs over spaces." --allow-memory
+  invariants "mem1-$2" || return $?
+  [ -f "$MALYUTKA_STATE_DIR/memory.md" ] || return 2
+  grep -qi 'tab' "$MALYUTKA_STATE_DIR/memory.md" || return 2
+  [ "$(stat -c %a "$MALYUTKA_STATE_DIR/memory.md")" = 600 ] || return 1
+  [ ! -e "$PWD/memory.md" ] || return 1
+  run "mem2-$2" "$1" "According to your notes, does the operator prefer tabs or spaces? One word." --allow-memory
+  grep -qi 'tab' "$WORK/mem2-$2.err" || return 2
+  return 0
+}
+c_mandate() {
+  fresh "mand-$2"
+  run "mandn-$2" "$1" "Run exactly this shell command: touch mandate.marker" --allow-shell --ask-from:B2 --mandates
+  invariants "mandn-$2" || return $?
+  [ ! -e mandate.marker ] || { log "      ASK ran without a mandate"; return 1; }
+  chk has "$WORK/mandn-$2.trace" tool.proposed name=shell || return 2
+  local mid
+  mid=$("$BIN" mandate --grant --tools:shell --max-effect:B2 --actions:2 --ttl:600 --goal:live 2>/dev/null | awk '{print $1}')
+  [ -n "$mid" ] || return 1
+  run "mandy-$2" "$1" "Run exactly this shell command: touch mandate.marker" --allow-shell --ask-from:B2 --mandates
+  invariants "mandy-$2" || return $?
+  [ -e mandate.marker ] || return 2
+  chk has "$WORK/mandy-$2.trace" policy.decision "policy~=mandate:$mid" || return 1
+  return 0
+}
+
+ALL_CHECKS="files shell_and_files ask_deny ask_once ask_timeout resume memory mandate"
+for m in $MODELS; do
+  log ""; log "== model $m"
+  if ! curl -fsS "$OLLAMA/api/tags" | python3 -c 'import json,sys; n=sys.argv[1]; sys.exit(0 if any(x["name"]==n for x in json.load(sys.stdin)["models"]) else 1)' "$m"; then
+    log "  SKIP  [$m] model not installed"; skips=$((skips+1)); continue
+  fi
+  for c in $ALL_CHECKS; do attempt "$m" "$c" "c_$c"; done
+done
+
+log ""
+never=""
+for c in $ALL_CHECKS; do
+  if [ -n "${seen_check[$c]:-}" ] && [ -z "${passed_anywhere[$c]:-}" ]; then never="$never $c"; fi
+done
+log "summary: FAIL=$fails SKIP=$skips"
+[ -n "$never" ] && log "checks that never passed on any model (they prove nothing):$never"
+[ $fails -gt 0 ] && exit 1
+[ -n "$never" ] && exit 3
+exit 0

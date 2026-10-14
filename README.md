@@ -70,6 +70,7 @@ with its AppArmor restriction active (see the table).
 | Native Nim 2.x build and tests | pass on CI (Nim 2.2.x, ubuntu-24.04, unprivileged runner) |
 | Nim 2.2.4 semantic check (`nim check`) | 0 diagnostics in Malyutka sources |
 | Live Ollama tool calling on a real host (qwen3.5:27b): single + multi-call, sandboxed shell, model-issued escape attempt, live SIGKILL + restart | **certified**: [record](docs/certification/M1.2-calisota-20261007.md) (Ubuntu 22.04, Nim 2.2.12, bwrap 0.6.1) |
+| M2 features (file tools, approvals, resume, memory, mandates) with real models (qwen3.5 9b/27b, devstral-small-2:24b, gpt-oss:20b) | **validated**: [record](docs/certification/M2-live-calisota-20261013.md), `tests/m2-live.sh` (8 checks x 4 models, 0 failures) |
 | vLLM | optional; not yet run live |
 | bubblewrap with Ubuntu 24.04's AppArmor userns restriction **active** | **untested**: the certification host and CI both run without it |
 
