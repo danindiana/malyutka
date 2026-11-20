@@ -97,6 +97,11 @@ could violate it; the column names the milestone that must enforce it.
 | L3 | Nothing reachable from the sandbox or the transcript can change a latched mandate: the log is disjoint from the workspace, and edits, deletions and rewrites are corruption that refuses runs | enforced against the sandbox; tampering by the operator's uid is *detected*, not prevented (CRC, not a keyed chain) | L3 (4 tests), integration 8 |
 | L4 | Revoke and suspend need no approval and take effect before the next policy decision; a use after revocation, expiry or exhaustion is corruption | enforced | L4 (3 tests), budget, TTL |
 | L5 | Every action a mandate allowed names that mandate in the journal decision record and in a durable `use` record written before the action is authorized | enforced | L5, write-ahead, integration 8 |
+| E1 | An experiment assignment is a pure function of (seed, episode, k, q) and re-derives from the logged seed (SPEC-012) | enforced | E1 golden vectors (cross-checked in Python), replay forgeries |
+| E2 | No decision point is eligible while any outcome window is open, whatever arm opened it | enforced; not yet wired into the loop (SPEC-012 part 2) | E2 lockout tests, symmetric-arm trace, replay lockout forgery |
+| E3 | No arm is returned for delivery unless its point record is durable; a failing experiment log never blocks the agent | enforced in `trial.nim`; delivery itself is part 2 | E3 tests |
+| E4 | The experiment log is outside the workspace and strictly replayed: a record that disagrees with re-derived eligibility, history or assignment is corruption | enforced | E4 tests (12 CRC-resealed forgeries) |
+| E5 | Reference patches are visible only to the evaluator | vacuous (SPEC-012 part 3) | — |
 
 Invariant **P** is new in 0.3.1. M1.1 violated it: a repetition halt in the
 middle of a multi-call turn returned with calls unanswered. That is the same
@@ -447,6 +452,7 @@ certifier bugs all fail it.
 - `tests/test_invariants.nim`
 - `tests/test_adversarial.nim`
 - `tests/test_latch.nim`
+- `tests/test_experiment.nim` (SPEC-012; no model or agent loop)
 - `tests/integration.sh BIN` (CLI, strict provider, SIGKILL crash,
   journal placement and tampering)
 

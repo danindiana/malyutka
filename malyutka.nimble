@@ -18,3 +18,4 @@ task test, "Run tests":
   exec "nim c -r --hints:off --path:src tests/test_mcp.nim"
   exec "nim c -r --hints:off --path:src tests/test_web.nim"
   exec "nim c -r --hints:off --path:src tests/test_latch.nim"
+  exec "nim c -r --hints:off --path:src tests/test_experiment.nim"

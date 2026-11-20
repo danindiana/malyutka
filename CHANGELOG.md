@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased: experiment layer, part 1 (SPEC-012)
+
+- New `src/malyutka/experiment/`: a reproducible micro-randomization layer for the Malyutka-RC-02 pilot.
+  `randomizer.nim` (counter-based seeded draws, logged probabilities), `eligibility.nim` (warm-up and a
+  **symmetric** outcome-window lockout: every eligible point opens a window whatever its arm),
+  `event_recorder.nim` (`exp/1` log on the journal's framing, CRC, sequence, fdatasync and liveness lock,
+  plus a strict replay that re-derives eligibility, history references and assignments) and `trial.nim`
+  (write-ahead order; a failing log disables the trial and never blocks the agent).
+- Not wired into the guidance loop yet; no change to the policy kernel, journal, approvals or tools.
+- New invariants **E1–E4** enforced, **E5** reserved. Tests: 33 new, no model involved; 21 mutants, 20
+  caught, one equivalent survivor documented in SPEC-012.
+
 ## 0.9.0 web access (SPEC-011)
 
 ### Search (part 2)
