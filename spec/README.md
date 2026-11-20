@@ -18,6 +18,7 @@ A spec is done when its status is `implemented` **and** its invariant row in
 | [SPEC-009](SPEC-009-skills.md) | Skills | I1, I4 | implemented 0.8.0 |
 | [SPEC-010](SPEC-010-mcp-client.md) | MCP client (stdio) | I17 | implemented 0.8.0 |
 | [SPEC-011](SPEC-011-web-access.md) | Web access (search and fetch) | I18 | implemented 0.9.0 |
+| [SPEC-012](SPEC-012-experiment-layer.md) | Experiment layer (Malyutka-RC-02) | E1–E5 | part 1 implemented (unreleased) |
 
 Template: *Status · Goals · Non-goals · Interface · Invariants · Failure modes · Tests and mutants · Rollout*.
 Backlog items that are not yet specified live in [`../todo/`](../todo/README.md).
